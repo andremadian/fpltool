@@ -42,5 +42,9 @@ ENV/
 # Tooling
 .claude/
 
+# FreeFileSync state
+*.ffs_db
+*.ffs_gui
+
 # Logs
 *.log

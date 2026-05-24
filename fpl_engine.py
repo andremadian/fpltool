@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 
 BOOTSTRAP_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 ELEMENT_SUMMARY_URL = "https://fantasy.premierleague.com/api/element-summary/{player_id}/"
+FIXTURES_URL = "https://fantasy.premierleague.com/api/fixtures/"
 REQUEST_TIMEOUT_SECONDS = 30
 POSITION_MAP = {1: "GKP", 2: "DEF", 3: "MID", 4: "FWD"}
 HISTORY_BATCH_SIZE = 500
@@ -205,6 +206,44 @@ def write_history(history_rows: list[dict[str, Any]], supabase: Client) -> None:
         logger.info("Upserted %d / %d history rows", min(start + HISTORY_BATCH_SIZE, total), total)
 
 
+def fetch_fixtures() -> list[dict[str, Any]]:
+    """Fetch the FPL fixtures list (past + future) and return cleaned records."""
+    logger.info("Fetching fixtures from FPL API")
+    response = requests.get(FIXTURES_URL, timeout=REQUEST_TIMEOUT_SECONDS)
+    response.raise_for_status()
+    df = pd.DataFrame(response.json())
+
+    # Use pandas nullable Int64 so columns with occasional nulls (gw, scores)
+    # stay as integers — float dtype would JSON-serialize "2.0" which
+    # Postgres rejects when upserting into int columns.
+    snapshot = pd.DataFrame({
+        "id": df["id"].astype("Int64"),
+        "gw": df["event"].astype("Int64"),
+        "kickoff_time": df["kickoff_time"],
+        "home_team_id": df["team_h"].astype("Int64"),
+        "away_team_id": df["team_a"].astype("Int64"),
+        "home_difficulty": df["team_h_difficulty"].astype("Int64"),
+        "away_difficulty": df["team_a_difficulty"].astype("Int64"),
+        "home_score": df["team_h_score"].astype("Int64"),
+        "away_score": df["team_a_score"].astype("Int64"),
+        "finished": df["finished"].astype(bool),
+    })
+    return json.loads(snapshot.to_json(orient="records"))
+
+
+def write_fixtures(rows: list[dict[str, Any]], supabase: Client) -> None:
+    """Upsert fixtures into the fixtures table."""
+    if not rows:
+        logger.warning("No fixtures to write")
+        return
+    supabase.table("fixtures").upsert(rows).execute()
+    unfinished = sum(1 for r in rows if not r.get("finished"))
+    logger.info(
+        "Upserted %d fixtures (%d unfinished — projections will use these)",
+        len(rows), unfinished,
+    )
+
+
 def main() -> None:
     """Run the full daily ingestion pipeline."""
     supabase = get_supabase_client()
@@ -212,6 +251,8 @@ def main() -> None:
     write_snapshot(data, supabase)
     history_rows = fetch_player_history(data)
     write_history(history_rows, supabase)
+    fixtures = fetch_fixtures()
+    write_fixtures(fixtures, supabase)
 
 
 if __name__ == "__main__":

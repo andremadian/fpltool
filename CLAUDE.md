@@ -94,12 +94,14 @@ The schema enables RLS only on user-related tables. FPL data is public anyway (t
 - **`players_master`** — current snapshot, one row per player (~840 by mid-season), includes derived fields (`price`, `points_per_90`, `price_per_point`, `cbit`). `xgc` here is season cumulative.
 - **`player_history`** — per-GW time series, PK `(player_id, gw)`. Stats are PER gameweek, not cumulative. Includes `xgc` per GW (added in migration 0002).
 - **`team_history`** — view aggregating `player_history` to team level per GW. `team_xgc` is `MAX(xgc)` across team's players (sum would overcount since xgc scales with minutes — see migration 0002 for rationale).
+- **`fixtures`** — every fixture in the current FPL season (past + future). Includes FDR (`home_difficulty`/`away_difficulty`), kickoff time, scores (null until `finished=true`). Added in migration 0003 for matchup projection queries.
 - **user/conversation tables** — empty in Phase 1; Phase 3+
 
 ## Migrations
 
 - **0001** — initial schema. Apply once via Supabase SQL Editor.
 - **0002** — adds per-GW `xgc` to `player_history`; recreates `team_history` view with `team_xgc` (MAX, not SUM). Re-run `fpl_engine.py` after applying to backfill the new column.
+- **0003** — adds `fixtures` table. Re-run `fpl_engine.py` after applying to populate.
 
 ## Conventions
 
