@@ -19,11 +19,21 @@ The two `_projection` queries compute their own form metric inline:
 
 ```
 form_recent = sum(total_points over last 5 played GWs) / games_played
+form_3gw    = sum(total_points over last 3 played GWs) / games_played
+form_delta  = form_3gw - form_recent
 ```
 
-This is intentionally **not** FPL's built-in `form` field — FPL's form rolls over ~30 calendar days and is sometimes deflated by cup games or breaks. `form_recent` is strictly time-aligned with everything else in the projection (last 5 played GWs).
+`form_recent` is the projection's base — strictly time-aligned with everything else in the formula (last 5 played GWs), and lower-variance than a 3-GW average.
 
-Both fields are returned (`fpl_form` and `form_recent`) so you can compare and decide which signal you trust more in a given situation.
+`form_3gw` and `form_delta` are **acceleration signals** that tell you whether to trust or override the projection:
+
+| `form_delta` | Meaning | Action |
+|---|---|---|
+| **> +1** | Heating up sharply | Projection may *understate* the ceiling |
+| **~0** | Stable form | Trust the projection |
+| **< −1** | Cooling off sharply | Projection may *overstate* the ceiling |
+
+Three fields are returned alongside (`fpl_form`, `form_recent`, `form_3gw`) so you can compare all three and decide which signal you trust most in any given situation.
 
 ## Score formulas
 

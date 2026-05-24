@@ -7,6 +7,12 @@
 -- Where form_recent is points-per-game over the same 5-GW window
 -- (a strictly time-aligned form metric, vs FPL's broader rolling form).
 --
+-- Also returns `form_3gw` and `form_delta` (3GW form minus 5GW form)
+-- as acceleration signals:
+--   form_delta > 0  → player is heating up; projection may understate ceiling
+--   form_delta < 0  → player is cooling off; projection may overstate ceiling
+--   form_delta ≈ 0  → signal stable, trust the projection
+--
 -- Returns one row per (player, upcoming fixture) — so DGWs produce
 -- two rows for a player. Use that to find double-up boom candidates.
 --
@@ -28,10 +34,12 @@ with last_5_per_player as (
 ),
 player_recent as (
   select player_id,
-         count(*)          as recent_games,
-         sum(minutes)      as recent_mins,
-         sum(xgi)          as xgi_sum,
-         sum(total_points) as pts_sum
+         count(*)          filter (where rn <= 5) as recent_games,
+         sum(minutes)      filter (where rn <= 5) as recent_mins,
+         sum(xgi)          filter (where rn <= 5) as xgi_sum,
+         sum(total_points) filter (where rn <= 5) as pts_sum,
+         count(*)          filter (where rn <= 3) as games_3gw,
+         sum(total_points) filter (where rn <= 3) as pts_sum_3gw
   from last_5_per_player
   where rn <= 5
   group by player_id
@@ -72,6 +80,16 @@ select
   pm.price,
   pm.form                                                     as fpl_form,
   round((pr.pts_sum::numeric / pr.recent_games), 2)           as form_recent,
+  case when pr.games_3gw > 0
+       then round((pr.pts_sum_3gw::numeric / pr.games_3gw), 2)
+  end                                                         as form_3gw,
+  case when pr.games_3gw > 0
+       then round(
+              (pr.pts_sum_3gw::numeric / pr.games_3gw)
+              - (pr.pts_sum::numeric / pr.recent_games),
+              2
+            )
+  end                                                         as form_delta,
   pf.gw                                                       as upcoming_gw,
   pf.kickoff_time,
   pf.venue,
