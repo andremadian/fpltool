@@ -168,3 +168,100 @@ Each day after 3 AM UTC you should see a new deployment in this list. Click into
 - **`users`, `user_rivals`, `conversations`, `messages`, `user_profile`** — empty in Phase 1; used by the conversational app in Phase 3+
 
 See the brief or the migration file for full column definitions.
+
+---
+
+# Phase 2 — User & Rivals Ingestion
+
+Additive layer on top of Phase 1. Captures **my own FPL squad** and the **squads of my rivals** across multiple mini-leagues per gameweek, then provides SQL queries to compare. Like Phase 1, this is a data-only phase — no chat, no LLM, no auth.
+
+## What it adds
+
+- **`fpl_user_engine.py`** — separate script that fetches user + rivals data and upserts into Supabase. Six-step pipeline: load config → my squad → league standings → rival squads → batch upsert → summary log.
+- **Migration `0004_phase2_user_and_rivals.sql`** — adds four new tables: `tracked_leagues`, `user_team_snapshots`, `league_rivals`, `rival_team_snapshots`.
+- **Four curated SQL queries** under `sql/queries/` for "me vs rivals" analysis.
+- **Two new cron entries** — runs Friday 5:30pm + Saturday 10am WIB.
+
+Phase 1's `fpl_engine.py` is untouched. Phase 2 reads from Phase 1 tables (e.g. `players_master.ownership`) but doesn't write to them.
+
+## Phase 2 setup
+
+### 1. Apply the new migration
+
+In Supabase SQL Editor, paste the contents of `supabase/migrations/0004_phase2_user_and_rivals.sql` and run. Creates the four new tables.
+
+### 2. Configure tracked leagues
+
+The script reads from `tracked_leagues` to know which leagues + my-team-id to use. Insert one row per league you want to follow. In Supabase SQL Editor:
+
+```sql
+INSERT INTO tracked_leagues (league_id, league_name, my_fpl_team_id, notes)
+VALUES
+  (298087, 'Cimanuk-ers',  453241, 'work league'),
+  (123456, 'Friends 2025', 453241, 'main league');
+```
+
+- `league_id` — find in the FPL site URL when you open a league: `.../leagues/<league_id>/standings/c`
+- `my_fpl_team_id` — find in your team page URL: `.../entry/<my_fpl_team_id>/`
+- All rows can share the same `my_fpl_team_id` (this is the normal case)
+
+### 3. Run
+
+`.env` from Phase 1 is reused — no new variables.
+
+```bash
+python3 fpl_user_engine.py
+```
+
+Expected: under 5 minutes for ~5 leagues × ~15 rivals/league. Re-running just updates rows (idempotent).
+
+Look for the summary line at the end:
+```
+Phase 2 run complete: N leagues, N rivals, N squad snapshots, N pre-deadline skips, Ns
+```
+
+### 4. Cron — two runs per week
+
+Append to your existing crontab (`crontab -e`). The Phase 1 entry (Friday 5pm) stays unchanged:
+
+```cron
+# fpl-sniper-user (Phase 2)
+30 17 * * 5 /path/to/python /path/to/fpl_user_engine.py >> /path/to/logs/cron.log 2>&1
+0  10 * * 6 /path/to/python /path/to/fpl_user_engine.py >> /path/to/logs/cron.log 2>&1
+```
+
+- **Friday 5:30pm WIB** — 30 minutes after Phase 1 finishes, so global data is fresh.
+- **Saturday 10am WIB** — captures rival squads after the typical Saturday-morning UK deadline. This is the canonical capture; Friday is a safety net.
+
+## Important caveat — pre-deadline behavior
+
+If `fpl_user_engine.py` runs before the GW deadline, the FPL picks endpoint returns either:
+- **404** — for rivals whose squad hasn't been finalised for that GW, or
+- **stale data** — last GW's picks, recognisable because `entry_history.event` doesn't match the target GW.
+
+The script handles both: it logs `Rival X squad not yet finalized for GW Y, skipping` and continues. The skip count appears in the summary line. The Saturday 10am cron is the canonical capture for this reason.
+
+For DGWs with earlier deadlines, add an ad-hoc manual run.
+
+## The four SQL queries
+
+Run any of these in Supabase SQL Editor:
+
+| Query | Purpose |
+|---|---|
+| [`my_squad_vs_rivals.sql`](sql/queries/my_squad_vs_rivals.sql) | Your 15 picks ranked by % of rivals also owning them. Differentials at top. |
+| [`rival_captain_consensus.sql`](sql/queries/rival_captain_consensus.sql) | How rivals are spreading their captaincy, with points scored. |
+| [`rival_transfers_in_out.sql`](sql/queries/rival_transfers_in_out.sql) | Players being transferred in/out across rivals this GW. **Returns empty until the second weekly capture** — needs 2 GWs of data. |
+| [`league_template_vs_global.sql`](sql/queries/league_template_vs_global.sql) | Players ≥50% owned by rivals but <30% globally — the mini-league template. |
+
+All four queries anchor on the most recent GW present in `rival_team_snapshots`, so they keep working as more snapshots accumulate.
+
+## Phase 2 schema cheat sheet
+
+- **`tracked_leagues`** — config table. You insert rows manually. `(league_id, my_fpl_team_id)` per league you follow.
+- **`user_team_snapshots`** — your squad per GW. PK `(fpl_team_id, gw)`. Includes captain, vice, chip, bench order, transfers, ranks, bank, team value.
+- **`league_rivals`** — standings per league, refreshed each run. PK `(league_id, rival_fpl_team_id)`.
+- **`rival_team_snapshots`** — rivals' squads per GW. PK `(rival_fpl_team_id, gw)`. Same shape as `user_team_snapshots` minus personal-finance fields.
+
+See `supabase/migrations/0004_phase2_user_and_rivals.sql` for full column definitions.
+
