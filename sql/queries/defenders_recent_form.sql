@@ -5,7 +5,10 @@
 -- low recent xGC (own team not conceding) and form. Use this to
 -- find clean-sheet candidates with bonus-point ceiling.
 --
--- Requires: migrations 0001 (base schema), 0002 (xgc in player_history)
+-- Requires: migrations 0001 (base schema), 0002 (xgc in player_history),
+-- 0005 (season column). Anchors on the latest season present in `fixtures`
+-- (populated from day one of a new season), so early in a new season this
+-- returns nothing rather than last season's stats under re-issued IDs.
 --
 -- Tunable knobs:
 --   - LIMIT
@@ -15,7 +18,10 @@
 --   - position filter — narrow to ('DEF') or ('GKP') etc.
 -- ============================================
 
-with last_5 as (
+with current_season as (
+  select max(season) as season from fixtures
+),
+last_5 as (
   select
     ph.player_id,
     ph.gw,
@@ -27,6 +33,7 @@ with last_5 as (
     row_number() over (partition by ph.player_id order by ph.gw desc) as recency_rank
   from player_history ph
   where ph.minutes > 0
+    and ph.season = (select season from current_season)
 ),
 agg as (
   select

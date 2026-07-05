@@ -4,6 +4,10 @@ Fetches my own FPL squad and the squads of rivals across my tracked
 mini-leagues, then upserts them into Supabase. Runs twice weekly via
 local cron (Friday 5:30pm + Saturday 10am WIB).
 
+Squad snapshots are stamped with the season (e.g. '2025/26') because FPL
+re-issues player and team IDs each season. Once every gameweek is finished
+the run exits early until the new season's API goes live.
+
 Separate from fpl_engine.py (Phase 1) which ingests global FPL data.
 """
 
@@ -25,6 +29,10 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger(__name__)
+
+# The Supabase client logs every HTTP request at INFO via httpx — noisy
+# enough to drown out the pipeline's own progress messages.
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
 BOOTSTRAP_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 PICKS_URL = "https://fantasy.premierleague.com/api/entry/{team_id}/event/{gw}/picks/"
@@ -62,6 +70,21 @@ def fetch_bootstrap() -> dict[str, Any]:
     return response.json()
 
 
+def determine_season(bootstrap: dict[str, Any]) -> str:
+    """Derive the season label (e.g. '2025/26') from GW1's deadline year."""
+    events = bootstrap.get("events", [])
+    if not events:
+        raise ValueError("bootstrap-static has no events; cannot determine season")
+    start_year = int(events[0]["deadline_time"][:4])
+    return f"{start_year}/{(start_year + 1) % 100:02d}"
+
+
+def season_is_complete(bootstrap: dict[str, Any]) -> bool:
+    """True once every gameweek in the bootstrap is marked finished."""
+    events = bootstrap.get("events", [])
+    return bool(events) and all(e.get("finished") for e in events)
+
+
 def determine_current_gw(bootstrap: dict[str, Any]) -> int | None:
     """Find the current gameweek from bootstrap-static events. None if season idle."""
     for event in bootstrap.get("events", []):
@@ -76,7 +99,8 @@ def determine_current_gw(bootstrap: dict[str, Any]) -> int | None:
 
 
 def _build_squad_row(
-    team_id: int, gw: int, picks_payload: dict[str, Any], history_payload: dict[str, Any],
+    team_id: int, gw: int, season: str,
+    picks_payload: dict[str, Any], history_payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Translate FPL picks + history responses into a user_team_snapshots row."""
     picks = sorted(picks_payload["picks"], key=lambda p: p["position"])
@@ -93,6 +117,7 @@ def _build_squad_row(
     )
 
     return {
+        "season": season,
         "fpl_team_id": team_id,
         "gw": gw,
         "player_ids": player_ids,
@@ -111,7 +136,7 @@ def _build_squad_row(
 
 
 def fetch_and_write_my_squads(
-    leagues: list[dict[str, Any]], gw: int, supabase: Client,
+    leagues: list[dict[str, Any]], gw: int, season: str, supabase: Client,
 ) -> int:
     """For each unique my_fpl_team_id, fetch picks + history and upsert one row."""
     my_team_ids = sorted({row["my_fpl_team_id"] for row in leagues})
@@ -134,7 +159,7 @@ def fetch_and_write_my_squads(
             history_resp.raise_for_status()
             history_payload = history_resp.json()
 
-            row = _build_squad_row(team_id, gw, picks_payload, history_payload)
+            row = _build_squad_row(team_id, gw, season, picks_payload, history_payload)
             supabase.table("user_team_snapshots").upsert(row).execute()
             logger.info(
                 "Upserted my squad: team_id=%d gw=%d points=%s rank=%s",
@@ -201,6 +226,9 @@ def write_league_standings(
             logger.warning("League %d returned 0 rivals (excluding self)", league_id)
             continue
 
+        # Replace, don't just upsert: rivals who left the league since the
+        # last run would otherwise linger as stale standings rows forever.
+        supabase.table("league_rivals").delete().eq("league_id", league_id).execute()
         supabase.table("league_rivals").upsert(rivals).execute()
         logger.info(
             "Upserted %d rivals for league %d (%s)",
@@ -219,7 +247,7 @@ def load_unique_rival_ids(supabase: Client) -> list[int]:
 
 
 def _build_rival_row(
-    rival_id: int, gw: int, picks_payload: dict[str, Any],
+    rival_id: int, gw: int, season: str, picks_payload: dict[str, Any],
 ) -> dict[str, Any]:
     """Translate FPL picks response into a rival_team_snapshots row."""
     picks = sorted(picks_payload["picks"], key=lambda p: p["position"])
@@ -230,6 +258,7 @@ def _build_rival_row(
     entry_history = picks_payload.get("entry_history") or {}
 
     return {
+        "season": season,
         "rival_fpl_team_id": rival_id,
         "gw": gw,
         "player_ids": player_ids,
@@ -244,7 +273,7 @@ def _build_rival_row(
 
 
 def fetch_rival_squads(
-    rival_ids: list[int], gw: int,
+    rival_ids: list[int], gw: int, season: str,
 ) -> tuple[list[dict[str, Any]], int]:
     """Fetch every rival's picks for the GW. Returns (rows, skipped_count).
 
@@ -278,7 +307,7 @@ def fetch_rival_squads(
                     )
                     skipped += 1
                 else:
-                    rows.append(_build_rival_row(rival_id, gw, payload))
+                    rows.append(_build_rival_row(rival_id, gw, season, payload))
         except Exception as exc:
             logger.error("Failed to fetch picks for rival %d: %s", rival_id, exc)
             continue
@@ -318,17 +347,24 @@ def main() -> None:
         return
 
     bootstrap = fetch_bootstrap()
+    season = determine_season(bootstrap)
+    if season_is_complete(bootstrap):
+        logger.info(
+            "Season %s is complete — no live gameweeks to capture. Exiting.", season,
+        )
+        return
+
     current_gw = determine_current_gw(bootstrap)
     if current_gw is None:
         logger.warning("No current or next gameweek found in bootstrap-static. Exiting.")
         return
-    logger.info("Targeting gameweek %d", current_gw)
+    logger.info("Targeting season %s, gameweek %d", season, current_gw)
 
-    fetch_and_write_my_squads(leagues, current_gw, supabase)
+    fetch_and_write_my_squads(leagues, current_gw, season, supabase)
     write_league_standings(leagues, supabase)
 
     rival_ids = load_unique_rival_ids(supabase)
-    rival_rows, skipped = fetch_rival_squads(rival_ids, current_gw)
+    rival_rows, skipped = fetch_rival_squads(rival_ids, current_gw, season)
     write_rival_squads(rival_rows, supabase)
 
     duration = round(time.monotonic() - started, 1)

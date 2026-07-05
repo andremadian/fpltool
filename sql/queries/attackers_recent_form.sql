@@ -5,7 +5,10 @@
 -- actually got on the pitch, tiebroken by FPL form. Use this to
 -- find who's creating most in-game right now.
 --
--- Requires: migrations 0001 (base schema), 0002 (xgc in player_history)
+-- Requires: migrations 0001 (base schema), 0002 (xgc in player_history),
+-- 0005 (season column). Anchors on the latest season present in `fixtures`
+-- (populated from day one of a new season), so early in a new season this
+-- returns nothing rather than last season's stats under re-issued IDs.
 --
 -- Tunable knobs:
 --   - LIMIT — how many rows to show
@@ -14,7 +17,10 @@
 --   - rn <= 5 — window size (raise for longer-term form)
 -- ============================================
 
-with last_5 as (
+with current_season as (
+  select max(season) as season from fixtures
+),
+last_5 as (
   select
     ph.player_id,
     ph.gw,
@@ -28,6 +34,7 @@ with last_5 as (
     row_number() over (partition by ph.player_id order by ph.gw desc) as recency_rank
   from player_history ph
   where ph.minutes > 0
+    and ph.season = (select season from current_season)
 ),
 agg as (
   select

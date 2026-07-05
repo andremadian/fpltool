@@ -5,9 +5,11 @@
 -- the most rivals transferring them in or out, by diffing each
 -- rival's current squad against their previous-GW squad.
 --
--- Requires: migration 0004 (Phase 2 schema), at least TWO GWs of
--- rival_team_snapshots data. The first Phase 2 run only has one GW,
--- so this query returns empty until the second weekly capture.
+-- Requires: migrations 0004 (Phase 2 schema) and 0005 (season column),
+-- plus at least TWO GWs of rival_team_snapshots data IN THE SAME SEASON.
+-- The first Phase 2 run of a season only has one GW, so this query
+-- returns empty until the second weekly capture (it never diffs GW1 of
+-- a new season against GW38 of the previous one).
 --
 -- Method:
 --   transferred IN  = players in this-GW squad but not last-GW squad
@@ -18,22 +20,27 @@
 -- ============================================
 
 with latest_gw as (
-  select max(gw) as gw from rival_team_snapshots
+  select season, gw
+  from rival_team_snapshots
+  order by season desc, gw desc
+  limit 1
 ),
 prev_gw as (
-  select max(gw) as gw
+  select season, max(gw) as gw
   from rival_team_snapshots
-  where gw < (select gw from latest_gw)
+  where season = (select season from latest_gw)
+    and gw < (select gw from latest_gw)
+  group by season
 ),
 now_squads as (
   select rts.rival_fpl_team_id, unnest(rts.player_ids) as player_id
   from rival_team_snapshots rts
-  join latest_gw lg on lg.gw = rts.gw
+  join latest_gw lg on lg.season = rts.season and lg.gw = rts.gw
 ),
 prev_squads as (
   select rts.rival_fpl_team_id, unnest(rts.player_ids) as player_id
   from rival_team_snapshots rts
-  join prev_gw pg on pg.gw = rts.gw
+  join prev_gw pg on pg.season = rts.season and pg.gw = rts.gw
 ),
 rivals_with_both as (
   select distinct n.rival_fpl_team_id
@@ -70,7 +77,7 @@ now_ownership as (
 total_rivals as (
   select count(distinct rival_fpl_team_id) as n
   from rival_team_snapshots rts
-  join latest_gw lg on lg.gw = rts.gw
+  join latest_gw lg on lg.season = rts.season and lg.gw = rts.gw
 ),
 all_players as (
   select player_id from transferred_in

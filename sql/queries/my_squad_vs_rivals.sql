@@ -6,34 +6,38 @@
 -- leagues) who also own them. Differentials surface at the top
 -- (low rival ownership), template picks at the bottom.
 --
--- Requires: migration 0004 (Phase 2 schema), plus user_team_snapshots
--- and rival_team_snapshots populated for the same GW.
+-- Requires: migrations 0004 (Phase 2 schema) and 0005 (season column),
+-- plus user_team_snapshots and rival_team_snapshots populated for the
+-- same (season, GW).
 --
 -- Notes:
---   - "latest GW" comes from rival_team_snapshots — if rivals haven't
---     been captured yet for the current GW, falls back to the most
---     recent GW where rival picks exist.
+--   - "latest GW" comes from rival_team_snapshots — the most recent
+--     (season, gw) where rival picks exist — so if rivals haven't been
+--     captured yet for the current GW, it falls back gracefully.
 --   - If you track multiple my_fpl_team_id values, the query unions
 --     them via DISTINCT (so a player in both my squads counts once).
 -- ============================================
 
 with latest_gw as (
-  select max(gw) as gw from rival_team_snapshots
+  select season, gw
+  from rival_team_snapshots
+  order by season desc, gw desc
+  limit 1
 ),
 my_squad as (
   select distinct unnest(uts.player_ids) as player_id
   from user_team_snapshots uts
-  join latest_gw lg on lg.gw = uts.gw
+  join latest_gw lg on lg.season = uts.season and lg.gw = uts.gw
 ),
 rival_ownership as (
   select rts.rival_fpl_team_id, unnest(rts.player_ids) as player_id
   from rival_team_snapshots rts
-  join latest_gw lg on lg.gw = rts.gw
+  join latest_gw lg on lg.season = rts.season and lg.gw = rts.gw
 ),
 total_rivals as (
   select count(distinct rival_fpl_team_id) as n
   from rival_team_snapshots rts
-  join latest_gw lg on lg.gw = rts.gw
+  join latest_gw lg on lg.season = rts.season and lg.gw = rts.gw
 )
 select
   pm.web_name                                                            as player_name,

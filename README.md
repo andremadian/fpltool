@@ -20,12 +20,13 @@ A daily Python script that fetches Fantasy Premier League data and writes it to 
 
 Each run, the script:
 
-1. Fetches the FPL `bootstrap-static` snapshot (teams, players, gameweeks)
+1. Fetches the FPL `bootstrap-static` snapshot (teams, players, gameweeks) and derives the current **season label** (e.g. `2025/26`) from GW1's deadline year
 2. Cleans the data with pandas and **upserts** teams + players into the snapshot tables
 3. For every player with minutes played or a price change, fetches per-gameweek `element-summary` history
 4. Aggregates double-gameweek fixtures (when a player plays twice in one GW) and batch-upserts all history rows
+5. Upserts all 380 fixtures (FDR, kickoff times, scores)
 
-The full run takes ~2–3 minutes and is idempotent — re-running just updates rows.
+Every time-series row is stamped with the season, because FPL re-issues player/team/fixture IDs each season (see **Season rollover** below). The full run takes ~2–3 minutes and is idempotent — re-running just updates rows.
 
 ---
 
@@ -41,15 +42,17 @@ The full run takes ~2–3 minutes and is idempotent — re-running just updates 
 ```bash
 git clone <your-repo-url>
 cd "Personal FPL Tool"
-pip install -r requirements.txt
+python3 -m venv .venv
+.venv/bin/pip install -r requirements.txt
 ```
+
+The project venv keeps the pipeline immune to system-Python upgrades/removals — the cron entries point at `.venv/bin/python`, not whatever `python3` happens to resolve to.
 
 ### 2. Apply the database schema
 
 In your Supabase dashboard:
 1. Open **SQL Editor**
-2. Paste the entire contents of `supabase/migrations/0001_initial_schema.sql`
-3. Click **Run**
+2. Paste and run each file in `supabase/migrations/` **in numeric order** (0001 → 0005)
 
 You should see "Success. No rows returned." This is correct — `CREATE TABLE` statements don't return data. If Supabase shows a Row Level Security warning, click **"Run without RLS"** — the data tables (`teams`, `players_master`, `player_history`) are intentionally public-readable; RLS is only applied to user-related tables.
 
@@ -71,7 +74,7 @@ Then edit `.env`:
 ### 4. Run
 
 ```bash
-python fpl_engine.py
+.venv/bin/python fpl_engine.py
 ```
 
 Expected output: log lines for upserting teams (20), players (~840), history (~18,000+ rows). After it finishes, check Supabase Table Editor — all three FPL tables should be populated.
@@ -163,11 +166,21 @@ Each day after 3 AM UTC you should see a new deployment in this list. Click into
 
 - **`teams`** — 20 Premier League clubs with strength ratings
 - **`players_master`** — current snapshot per player (one row each, ~840 rows)
-- **`player_history`** — per-gameweek time series (one row per `(player_id, gw)`, ~18k rows by end of season)
-- **`team_history`** — view aggregating `player_history` to the team level
+- **`player_history`** — per-gameweek time series (one row per `(season, player_id, gw)`, ~18k rows per season)
+- **`team_history`** — view aggregating `player_history` to the team level per (season, GW)
+- **`fixtures`** — all 380 fixtures per season with FDR, kickoff times, and scores; PK `(season, id)`
+- **`players_season_archive` / `teams_season_archive`** — who each re-issuable ID referred to in a given season; snapshotted automatically at season end
 - **`users`, `user_rivals`, `conversations`, `messages`, `user_profile`** — empty in Phase 1; used by the conversational app in Phase 3+
 
 See the brief or the migration file for full column definitions.
+
+## Season rollover
+
+FPL re-issues player IDs, team IDs (1–20) and fixture IDs every season, so all time-series tables carry a `season` column (e.g. `2025/26`) as part of their primary key (migration 0005). How the engines behave around the boundary:
+
+- **Mid-season** — every row written is stamped with the current season. Nothing changes operationally.
+- **Season end (all 38 GWs finished)** — the next `fpl_engine.py` run does one final ingest, then archives the final `players_master` + `teams` snapshots into `players_season_archive` / `teams_season_archive` (preserving "who was player 233 in 2025/26?"). Runs after that exit early until FPL resets the API. `fpl_user_engine.py` exits early as soon as the season is complete.
+- **New season (FPL API resets, typically early July)** — both engines pick up the new season label automatically; no manual action needed. The curated queries anchor on the latest season, so they switch over on their own (and return nothing in pre-season rather than showing last season's stats under re-issued IDs).
 
 ---
 
@@ -210,7 +223,7 @@ VALUES
 `.env` from Phase 1 is reused — no new variables.
 
 ```bash
-python3 fpl_user_engine.py
+.venv/bin/python fpl_user_engine.py
 ```
 
 Expected: under 5 minutes for ~5 leagues × ~15 rivals/league. Re-running just updates rows (idempotent).
@@ -222,12 +235,12 @@ Phase 2 run complete: N leagues, N rivals, N squad snapshots, N pre-deadline ski
 
 ### 4. Cron — two runs per week
 
-Append to your existing crontab (`crontab -e`). The Phase 1 entry (Friday 5pm) stays unchanged:
+Append to your existing crontab (`crontab -e`). The Phase 1 entry (Friday 5pm) stays unchanged. Both engines run via the project venv and `cd` into the repo first so `.env` and `logs/` resolve:
 
 ```cron
-# fpl-sniper-user (Phase 2)
-30 17 * * 5 /path/to/python /path/to/fpl_user_engine.py >> /path/to/logs/cron.log 2>&1
-0  10 * * 6 /path/to/python /path/to/fpl_user_engine.py >> /path/to/logs/cron.log 2>&1
+0 17 * * 5 cd "/path/to/FPL Tool" && .venv/bin/python fpl_engine.py >> logs/cron.log 2>&1 # fpl-sniper-fetch
+30 17 * * 5 cd "/path/to/FPL Tool" && .venv/bin/python fpl_user_engine.py >> logs/cron.log 2>&1 # fpl-sniper-user
+0 10 * * 6 cd "/path/to/FPL Tool" && .venv/bin/python fpl_user_engine.py >> logs/cron.log 2>&1 # fpl-sniper-user
 ```
 
 - **Friday 5:30pm WIB** — 30 minutes after Phase 1 finishes, so global data is fresh.
@@ -259,9 +272,9 @@ All four queries anchor on the most recent GW present in `rival_team_snapshots`,
 ## Phase 2 schema cheat sheet
 
 - **`tracked_leagues`** — config table. You insert rows manually. `(league_id, my_fpl_team_id)` per league you follow.
-- **`user_team_snapshots`** — your squad per GW. PK `(fpl_team_id, gw)`. Includes captain, vice, chip, bench order, transfers, ranks, bank, team value.
-- **`league_rivals`** — standings per league, refreshed each run. PK `(league_id, rival_fpl_team_id)`.
-- **`rival_team_snapshots`** — rivals' squads per GW. PK `(rival_fpl_team_id, gw)`. Same shape as `user_team_snapshots` minus personal-finance fields.
+- **`user_team_snapshots`** — your squad per GW. PK `(season, fpl_team_id, gw)`. Includes captain, vice, chip, bench order, transfers, ranks, bank, team value.
+- **`league_rivals`** — standings per league, replaced each run (rivals who leave a league are removed). PK `(league_id, rival_fpl_team_id)`.
+- **`rival_team_snapshots`** — rivals' squads per GW. PK `(season, rival_fpl_team_id, gw)`. Same shape as `user_team_snapshots` minus personal-finance fields.
 
 See `supabase/migrations/0004_phase2_user_and_rivals.sql` for full column definitions.
 

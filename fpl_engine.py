@@ -1,7 +1,13 @@
-"""FPL Sniper daily ingestion pipeline.
+"""FPL Sniper global ingestion pipeline.
 
 Fetches Fantasy Premier League data from the public API and upserts it into
-Supabase Postgres. Designed to run once per day on Railway's cron scheduler.
+Supabase Postgres. Runs weekly via local cron (Friday 5pm WIB).
+
+Every time-series row is stamped with the season it belongs to (e.g.
+'2025/26') because FPL re-issues player, team and fixture IDs each season.
+At season end (all gameweeks finished) the run archives the final
+players_master + teams snapshots into the season archive tables, then
+subsequent off-season runs exit early until the new season's API goes live.
 """
 
 import json
@@ -25,6 +31,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# The Supabase client logs every HTTP request at INFO via httpx — hundreds of
+# lines per run that drown out the pipeline's own progress messages.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 BOOTSTRAP_URL = "https://fantasy.premierleague.com/api/bootstrap-static/"
 ELEMENT_SUMMARY_URL = "https://fantasy.premierleague.com/api/element-summary/{player_id}/"
 FIXTURES_URL = "https://fantasy.premierleague.com/api/fixtures/"
@@ -47,6 +57,64 @@ def fetch_bootstrap() -> dict[str, Any]:
     response = requests.get(BOOTSTRAP_URL, timeout=REQUEST_TIMEOUT_SECONDS)
     response.raise_for_status()
     return response.json()
+
+
+def determine_season(data: dict[str, Any]) -> str:
+    """Derive the season label (e.g. '2025/26') from GW1's deadline year."""
+    events = data.get("events", [])
+    if not events:
+        raise ValueError("bootstrap-static has no events; cannot determine season")
+    start_year = int(events[0]["deadline_time"][:4])
+    return f"{start_year}/{(start_year + 1) % 100:02d}"
+
+
+def season_is_complete(data: dict[str, Any]) -> bool:
+    """True once every gameweek in the bootstrap is marked finished."""
+    events = data.get("events", [])
+    return bool(events) and all(e.get("finished") for e in events)
+
+
+def season_already_archived(season: str, supabase: Client) -> bool:
+    """Check whether the identity archive already has rows for this season."""
+    response = (
+        supabase.table("players_season_archive")
+        .select("id")
+        .eq("season", season)
+        .limit(1)
+        .execute()
+    )
+    return bool(response.data)
+
+
+def archive_season_identities(data: dict[str, Any], season: str, supabase: Client) -> None:
+    """Snapshot final player + team identities before FPL re-issues the IDs."""
+    player_rows = [
+        {
+            "season": season,
+            "id": e["id"],
+            "web_name": e["web_name"],
+            "team_id": e["team"],
+            "position": POSITION_MAP.get(e["element_type"]),
+            "price": e["now_cost"] / 10,
+            "total_points": e["total_points"],
+        }
+        for e in data["elements"]
+    ]
+    team_rows = [
+        {
+            "season": season,
+            "id": t["id"],
+            "name": t["name"],
+            "short_name": t["short_name"],
+        }
+        for t in data["teams"]
+    ]
+    supabase.table("players_season_archive").upsert(player_rows).execute()
+    supabase.table("teams_season_archive").upsert(team_rows).execute()
+    logger.info(
+        "Archived season %s identities: %d players, %d teams",
+        season, len(player_rows), len(team_rows),
+    )
 
 
 def write_snapshot(data: dict[str, Any], supabase: Client) -> None:
@@ -111,7 +179,7 @@ def _to_float_or_none(value: Any) -> float | None:
         return None
 
 
-def fetch_player_history(data: dict[str, Any]) -> list[dict[str, Any]]:
+def fetch_player_history(data: dict[str, Any], season: str) -> list[dict[str, Any]]:
     """Fetch element-summary for active players, return flat list of history rows."""
     active = [
         e for e in data["elements"]
@@ -138,6 +206,7 @@ def fetch_player_history(data: dict[str, Any]) -> list[dict[str, Any]]:
                 cbi = row.get("clearances_blocks_interceptions") or 0
                 tackles = row.get("tackles") or 0
                 history_rows.append({
+                    "season": season,
                     "player_id": player_id,
                     "gw": row["round"],
                     "minutes": row.get("minutes", 0),
@@ -176,6 +245,7 @@ def _aggregate_double_gameweeks(rows: list[dict[str, Any]]) -> list[dict[str, An
     if not df.duplicated(subset=["player_id", "gw"]).any():
         return rows
     agg = df.groupby(["player_id", "gw"], as_index=False).agg({
+        "season": "first",
         "minutes": "sum",
         "total_points": "sum",
         "goals": "sum",
@@ -206,7 +276,7 @@ def write_history(history_rows: list[dict[str, Any]], supabase: Client) -> None:
         logger.info("Upserted %d / %d history rows", min(start + HISTORY_BATCH_SIZE, total), total)
 
 
-def fetch_fixtures() -> list[dict[str, Any]]:
+def fetch_fixtures(season: str) -> list[dict[str, Any]]:
     """Fetch the FPL fixtures list (past + future) and return cleaned records."""
     logger.info("Fetching fixtures from FPL API")
     response = requests.get(FIXTURES_URL, timeout=REQUEST_TIMEOUT_SECONDS)
@@ -217,6 +287,7 @@ def fetch_fixtures() -> list[dict[str, Any]]:
     # stay as integers — float dtype would JSON-serialize "2.0" which
     # Postgres rejects when upserting into int columns.
     snapshot = pd.DataFrame({
+        "season": season,
         "id": df["id"].astype("Int64"),
         "gw": df["event"].astype("Int64"),
         "kickoff_time": df["kickoff_time"],
@@ -245,14 +316,29 @@ def write_fixtures(rows: list[dict[str, Any]], supabase: Client) -> None:
 
 
 def main() -> None:
-    """Run the full daily ingestion pipeline."""
+    """Run the full ingestion pipeline, stamped with the current season."""
     supabase = get_supabase_client()
     data = fetch_bootstrap()
+    season = determine_season(data)
+    logger.info("Ingesting season %s", season)
+
+    season_over = season_is_complete(data)
+    if season_over and season_already_archived(season, supabase):
+        logger.info(
+            "Season %s is complete and already archived — nothing to ingest "
+            "until the new season's API goes live. Exiting.", season,
+        )
+        return
+
     write_snapshot(data, supabase)
-    history_rows = fetch_player_history(data)
+    history_rows = fetch_player_history(data, season)
     write_history(history_rows, supabase)
-    fixtures = fetch_fixtures()
+    fixtures = fetch_fixtures(season)
     write_fixtures(fixtures, supabase)
+
+    # Final run of the season: preserve who each re-issuable ID referred to.
+    if season_over:
+        archive_season_identities(data, season, supabase)
 
 
 if __name__ == "__main__":

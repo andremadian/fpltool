@@ -6,8 +6,9 @@
 -- FPL hivemind. These are the players you'd want to cover if you
 -- want to defend against rivals, or fade if you want to differentiate.
 --
--- Requires: migration 0004 (Phase 2 schema), plus rival_team_snapshots
--- populated for the current GW, and players_master.ownership (Phase 1).
+-- Requires: migrations 0004 (Phase 2 schema) and 0005 (season column),
+-- plus rival_team_snapshots populated for the current GW, and
+-- players_master.ownership (Phase 1).
 --
 -- Tunable knobs:
 --   - rival_ownership_pct >= 50 — how popular among rivals?
@@ -16,18 +17,21 @@
 -- ============================================
 
 with latest_gw as (
-  select max(gw) as gw from rival_team_snapshots
+  select season, gw
+  from rival_team_snapshots
+  order by season desc, gw desc
+  limit 1
 ),
 rival_ownership as (
   select unnest(rts.player_ids) as player_id, count(*) as n
   from rival_team_snapshots rts
-  join latest_gw lg on lg.gw = rts.gw
+  join latest_gw lg on lg.season = rts.season and lg.gw = rts.gw
   group by 1
 ),
 total_rivals as (
   select count(distinct rival_fpl_team_id) as n
   from rival_team_snapshots rts
-  join latest_gw lg on lg.gw = rts.gw
+  join latest_gw lg on lg.season = rts.season and lg.gw = rts.gw
 )
 select
   pm.web_name                                                          as player_name,

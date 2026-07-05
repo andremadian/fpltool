@@ -16,7 +16,9 @@
 -- Returns one row per (player, upcoming fixture) — so DGWs produce
 -- two rows for a player. Use that to find double-up boom candidates.
 --
--- Requires: migrations 0001 (base), 0002 (xgc), 0003 (fixtures)
+-- Requires: migrations 0001 (base), 0002 (xgc), 0003 (fixtures),
+-- 0005 (season). All CTEs filter to the latest season in `fixtures`
+-- so multi-season history never blends under re-issued player IDs.
 --
 -- Tunable knobs:
 --   - LIMIT
@@ -26,11 +28,15 @@
 --   - Add `and price <= 7.0` to the final WHERE for budget options
 -- ============================================
 
-with last_5_per_player as (
+with current_season as (
+  select max(season) as season from fixtures
+),
+last_5_per_player as (
   select ph.*,
          row_number() over (partition by player_id order by gw desc) as rn
   from player_history ph
   where minutes > 0
+    and season = (select season from current_season)
 ),
 player_recent as (
   select player_id,
@@ -48,6 +54,7 @@ last_5_per_team as (
   select th.*,
          row_number() over (partition by team_id order by gw desc) as rn
   from team_history th
+  where th.season = (select season from current_season)
 ),
 team_def as (
   select team_id, avg(team_xgc) as avg_xgc_last_5
@@ -60,6 +67,7 @@ upcoming as (
          home_difficulty, away_difficulty
   from fixtures
   where finished = false and gw is not null
+    and season = (select season from current_season)
 ),
 player_fixtures as (
   select pm.id as player_id, pm.team_id as player_team_id,

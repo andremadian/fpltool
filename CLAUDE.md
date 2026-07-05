@@ -24,9 +24,13 @@ The two engines run on separate cron schedules and write to disjoint sets of tab
 ### Phase 1 — `fpl_engine.py` (global FPL data)
 
 1. `fetch_bootstrap()` — GET `bootstrap-static`, returns ~840-player snapshot + 20 teams + gameweek data
-2. `write_snapshot(data, supabase)` — cleans with pandas, upserts `teams` and `players_master`
-3. `fetch_player_history(data)` — filters to active players (`minutes > 0 OR cost_change_event != 0`), loops `element-summary/{id}` with jittered sleep, returns flat list of GW history rows
-4. `write_history(rows, supabase)` — batches upserts to `player_history` in chunks of 500
+2. `determine_season(data)` — derive season label (e.g. `2025/26`) from GW1's deadline year; every time-series row is stamped with it
+3. `write_snapshot(data, supabase)` — cleans with pandas, upserts `teams` and `players_master`
+4. `fetch_player_history(data, season)` — filters to active players (`minutes > 0 OR cost_change_event != 0`), loops `element-summary/{id}` with jittered sleep, returns flat list of GW history rows
+5. `write_history(rows, supabase)` — batches upserts to `player_history` in chunks of 500
+6. `fetch_fixtures(season)` + `write_fixtures(rows, supabase)` — upserts all 380 fixtures (FDR, kickoff, scores)
+
+Season-end behavior: once every GW is `finished`, the run archives the final `players_master`/`teams` snapshots into `players_season_archive`/`teams_season_archive`, and subsequent runs exit early until the new season's API goes live (see decision #10).
 
 Full end-to-end runtime: ~2.5 minutes. Idempotent — re-running just updates existing rows.
 
@@ -35,10 +39,10 @@ Full end-to-end runtime: ~2.5 minutes. Idempotent — re-running just updates ex
 Six-step pipeline called from `main()`:
 
 1. `load_tracked_leagues(supabase)` — read config table; exit cleanly if empty
-2. `fetch_bootstrap()` + `determine_current_gw(bootstrap)` — find current GW (falls back to `is_next` if between GWs)
-3. `fetch_and_write_my_squads(leagues, gw, supabase)` — for each unique `my_fpl_team_id`, GET picks + /history/, upsert `user_team_snapshots`
-4. `write_league_standings(leagues, supabase)` — paginate `/leagues-classic/.../standings/`, exclude self, upsert `league_rivals`
-5. `load_unique_rival_ids` + `fetch_rival_squads(rival_ids, gw)` — dedupe rivals across leagues, GET picks per rival with jittered sleep, gracefully skip 404/stale (pre-deadline) responses
+2. `fetch_bootstrap()` + `determine_season` + `determine_current_gw` — derive season label and current GW (falls back to `is_next` if between GWs); exit early if the season is complete (all GWs finished)
+3. `fetch_and_write_my_squads(leagues, gw, season, supabase)` — for each unique `my_fpl_team_id`, GET picks + /history/, upsert `user_team_snapshots`
+4. `write_league_standings(leagues, supabase)` — paginate `/leagues-classic/.../standings/`, exclude self, then **delete + re-insert** each league's `league_rivals` rows (so rivals who leave a league don't linger)
+5. `load_unique_rival_ids` + `fetch_rival_squads(rival_ids, gw, season)` — dedupe rivals across leagues, GET picks per rival with jittered sleep, gracefully skip 404/stale (pre-deadline) responses
 6. `write_rival_squads(rows, supabase)` — batch upsert in chunks of 200
 
 Summary log line at end: `Phase 2 run complete: N leagues, N rivals, N squad snapshots, N pre-deadline skips, Ns`. Total runtime ~5–30s for typical league sizes.
@@ -48,11 +52,13 @@ Summary log line at end: `Phase 2 run complete: N leagues, N rivals, N squad sna
 Detailed in [README.md](README.md), but the short version:
 
 ```bash
-pip install -r requirements.txt
-# Apply supabase/migrations/0001_initial_schema.sql in Supabase SQL Editor
+python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
+# Apply supabase/migrations/*.sql in numeric order in Supabase SQL Editor
 cp .env.example .env  # fill in SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY
-python3 fpl_engine.py
+.venv/bin/python fpl_engine.py
 ```
+
+Always run the engines via `.venv/bin/python` — the system Python has been wiped/replaced before (July 2026), which killed the global installs the pipelines relied on. Cron points at the venv for this reason.
 
 `.env` is gitignored. `SUPABASE_SERVICE_ROLE_KEY` is the new-format `sb_secret_...` key from Settings → API Keys → Secret keys. **Not** the publishable key.
 
@@ -98,6 +104,9 @@ All four SQL queries use `max(gw) from rival_team_snapshots` as their reference 
 **9. Phase 2's pre-deadline skip detection checks two signals.**
 Some pre-deadline rivals return `404` from the picks endpoint, others return last GW's data (stale) with `entry_history.event != current_gw`. Both are skipped; the count surfaces in the summary line. This is the documented FPL caching quirk — the brief explicitly calls it out.
 
+**10. Season rollover: `season` column + identity archives (migration 0005).**
+FPL re-issues player IDs, team IDs (1–20) and fixture IDs every season. Migration 0005 added a `season` column (text, `'2025/26'` format, derived from GW1's deadline year) to `player_history`, `fixtures`, `user_team_snapshots`, `rival_team_snapshots`, rebuilt each PK to include it, and both engines stamp it on every row. Because next season's ingestion overwrites `players_master`/`teams` with re-issued IDs, `fpl_engine.py` archives the final snapshots into `players_season_archive`/`teams_season_archive` at season end (all GWs finished), then exits early on subsequent off-season runs until the new API goes live. Historical-season joins to `players_master`/`teams` are **wrong by design** — join the archive tables instead. All curated queries filter to the latest season (Phase 1 queries anchor on `max(season) from fixtures`, Phase 2 queries on the latest `(season, gw)` in `rival_team_snapshots`), so they never blend seasons and switch over automatically.
+
 ## Files
 
 ```
@@ -120,20 +129,24 @@ Some pre-deadline rivals return `404` from the picks endpoint, others return las
         ├── 0001_initial_schema.sql        # base schema
         ├── 0002_add_xgc_to_history.sql    # per-GW xgc
         ├── 0003_add_fixtures.sql          # fixtures table
-        └── 0004_phase2_user_and_rivals.sql  # user + rivals tables
+        ├── 0004_phase2_user_and_rivals.sql  # user + rivals tables
+        └── 0005_season_rollover.sql       # season column + identity archives
 ```
+
+(Plus `.venv/` — gitignored project venv that cron runs the engines through, and `docs/` — phase-planning context for Claude Chat.)
 
 ## Schema cheat sheet
 
 - **`teams`** — 20 rows, one per Premier League club + strength ratings
 - **`players_master`** — current snapshot, one row per player (~840 by mid-season), includes derived fields (`price`, `points_per_90`, `price_per_point`, `cbit`). `xgc` here is season cumulative.
-- **`player_history`** — per-GW time series, PK `(player_id, gw)`. Stats are PER gameweek, not cumulative. Includes `xgc` per GW (added in migration 0002).
-- **`team_history`** — view aggregating `player_history` to team level per GW. `team_xgc` is `MAX(xgc)` across team's players (sum would overcount since xgc scales with minutes — see migration 0002 for rationale).
-- **`fixtures`** — every fixture in the current FPL season (past + future). Includes FDR (`home_difficulty`/`away_difficulty`), kickoff time, scores (null until `finished=true`). Added in migration 0003 for matchup projection queries.
+- **`player_history`** — per-GW time series, PK `(season, player_id, gw)`. Stats are PER gameweek, not cumulative. Includes `xgc` per GW (added in migration 0002).
+- **`team_history`** — view aggregating `player_history` to team level per (season, GW). `team_xgc` is `MAX(xgc)` across team's players (sum would overcount since xgc scales with minutes — see migration 0002 for rationale).
+- **`fixtures`** — every fixture per season (past + future), PK `(season, id)`. Includes FDR (`home_difficulty`/`away_difficulty`), kickoff time, scores (null until `finished=true`). Added in migration 0003 for matchup projection queries.
+- **`players_season_archive` / `teams_season_archive`** — who each re-issuable FPL ID referred to in a given season. Written automatically at season end; join these (not `players_master`/`teams`) for historical-season names. Added in migration 0005.
 - **`tracked_leagues`** — Phase 2 config table. Manually populated. One row per league I want to follow; columns include `my_fpl_team_id` so the script knows whose perspective to capture.
-- **`user_team_snapshots`** — Phase 2. My squad per GW. PK `(fpl_team_id, gw)`. Includes captain/vice/chip/bench/transfers/ranks/bank/team_value.
-- **`league_rivals`** — Phase 2. Mini-league standings refreshed each run. PK `(league_id, rival_fpl_team_id)`.
-- **`rival_team_snapshots`** — Phase 2. Rivals' squads per GW. PK `(rival_fpl_team_id, gw)`. Same shape as `user_team_snapshots` minus personal-finance fields.
+- **`user_team_snapshots`** — Phase 2. My squad per GW. PK `(season, fpl_team_id, gw)`. Includes captain/vice/chip/bench/transfers/ranks/bank/team_value.
+- **`league_rivals`** — Phase 2. Mini-league standings, replaced (delete + insert) each run so leavers don't linger. PK `(league_id, rival_fpl_team_id)`.
+- **`rival_team_snapshots`** — Phase 2. Rivals' squads per GW. PK `(season, rival_fpl_team_id, gw)`. Same shape as `user_team_snapshots` minus personal-finance fields.
 - **user/conversation tables** — empty in Phases 1–2; Phase 3+. Note: Phase 2 deliberately uses its own tables instead of these because the existing scaffold FKs to `auth.users` and Phase 2 has no login.
 
 ## Migrations
@@ -142,6 +155,7 @@ Some pre-deadline rivals return `404` from the picks endpoint, others return las
 - **0002** — adds per-GW `xgc` to `player_history`; recreates `team_history` view with `team_xgc` (MAX, not SUM). Re-run `fpl_engine.py` after applying to backfill the new column.
 - **0003** — adds `fixtures` table. Re-run `fpl_engine.py` after applying to populate.
 - **0004** — Phase 2. Adds `tracked_leagues`, `user_team_snapshots`, `league_rivals`, `rival_team_snapshots`. Apply, then insert at least one row into `tracked_leagues`, then run `fpl_user_engine.py`. (Brief specified `0003_phase2_user_and_rivals.sql` but `0003` was taken — see decision #6.)
+- **0005** — season rollover. Adds `season` to the four time-series tables (backfilled as `'2025/26'`), rebuilds their PKs, recreates `team_history` with season, and creates + seeds `players_season_archive`/`teams_season_archive`. **Must be applied before the first 2026/27 engine run** — the engines write a `season` column from this migration onward and fail against an un-migrated database.
 
 ## Conventions
 
