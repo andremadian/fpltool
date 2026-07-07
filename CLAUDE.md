@@ -12,14 +12,17 @@ The script fetches FPL data daily and writes it to Supabase Postgres. The user q
 |-------|--------|-------|
 | 1. Global data ingestion | ✅ shipped | `fpl_engine.py` + Supabase schema |
 | 2. User + rivals ingestion | ✅ shipped | `fpl_user_engine.py` + 4 new tables + 4 analytics SQL queries |
-| 3. Conversational layer | — | Populates `users`, `conversations`, `messages` tables |
-| 4–5. (not yet briefed) | — | — |
+| 3A. Pre-season hardening | ✅ shipped (Jul 2026) | daily light run, `player_daily` + `pipeline_runs`, launchd, dead-man alerting, schema assert |
+| 3B. Conversational layer | — | LLM agent over the data; populates `conversations`, `messages` |
+| 4+. Sniper Brief, league surface | — | roadmap in [docs/EXPANSION_PLAN.md](docs/EXPANSION_PLAN.md) |
+
+Strategic direction (ratified July 2026): **option A — personal edge tool, built league-product-compatible.** Full market review + roadmap in [docs/EXPANSION_PLAN.md](docs/EXPANSION_PLAN.md).
 
 The `users`, `user_rivals`, `conversations`, `messages`, `user_profile` tables exist in the schema **but stay empty in Phases 1–2** — they're scaffolded for Phase 3+. Phase 2 deliberately uses its own tables (`user_team_snapshots`, `league_rivals`, etc.) that don't depend on Supabase Auth.
 
 ## How the pipelines work
 
-The two engines run on separate cron schedules and write to disjoint sets of tables. They share `.env` and the same Supabase client pattern but are otherwise independent.
+The two engines run on separate launchd schedules and write to disjoint sets of tables. They share `.env` and the same Supabase client pattern but are otherwise independent (ops helpers like `assert_schema`/`log_pipeline_run`/`ping_healthcheck` are deliberately duplicated in each, same as `fetch_bootstrap`). Both engines: assert the expected schema at startup (fail loudly naming the missing migration), record every run in `pipeline_runs`, and ping a healthchecks.io URL if configured.
 
 ### Phase 1 — `fpl_engine.py` (global FPL data)
 
@@ -33,6 +36,8 @@ The two engines run on separate cron schedules and write to disjoint sets of tab
 Season-end behavior: once every GW is `finished`, the run archives the final `players_master`/`teams` snapshots into `players_season_archive`/`teams_season_archive`, and subsequent runs exit early until the new season's API goes live (see decision #10).
 
 Full end-to-end runtime: ~2.5 minutes. Idempotent — re-running just updates existing rows.
+
+**Daily light mode** (`fpl_engine.py --daily`, added Phase 3A): one bootstrap call (~5s), refreshes `teams`/`players_master` and appends today's per-player row (price, ownership, transfers in/out, status/news/chance-of-playing, form) to `player_daily`. No history crawl, no fixtures. Same season-complete early exit.
 
 ### Phase 2 — `fpl_user_engine.py` (user + rivals)
 
@@ -64,13 +69,15 @@ Always run the engines via `.venv/bin/python` — the system Python has been wip
 
 ## Deployment
 
-**Running on local macOS cron**, not Railway. The user prefers local cron for personal tools (see global memory). The README still documents Railway as an alternative if reliability requires it.
+**Running on local macOS launchd LaunchAgents** (migrated from cron in July 2026 — launchd fires a missed job on wake from sleep; cron just skips it). The user prefers local scheduling for personal tools (see global memory). The README still documents Railway as an alternative if reliability requires it. Plists live in `launchd/` in the repo; installed copies in `~/Library/LaunchAgents/`.
 
-- **Phase 1 schedule:** Friday 5pm WIB (`0 17 * * 5`), tag `# fpl-sniper-fetch`
-- **Phase 2 schedule:** Friday 5:30pm WIB (`30 17 * * 5`) + Saturday 10am WIB (`0 10 * * 6`), tag `# fpl-sniper-user`
+- **`com.fplsniper.daily`:** every day 9am WIB — `fpl_engine.py --daily` (captures post-price-change state; FPL price changes land ~7:30am WIB)
+- **`com.fplsniper.fetch`:** Friday 5pm WIB — `fpl_engine.py` (weekly full run)
+- **`com.fplsniper.user`:** Friday 5:30pm + Saturday 10am WIB — `fpl_user_engine.py`
 - **Logs:** `logs/cron.log` (gitignored via `*.log`) — both engines log to the same file
-- **View:** `crontab -l | grep fpl-sniper` to see entries, `tail logs/cron.log` to inspect runs
-- **Caveat:** Mac must be awake at scheduled time. If reliability matters, upgrade to `launchd` LaunchAgent.
+- **View:** `launchctl list | grep fplsniper` for agents, `tail logs/cron.log` for runs, or query `pipeline_runs` in Supabase (one row per run, any outcome)
+- **Alerting:** healthchecks.io dead-man switch — engines ping `HEALTHCHECK_URL_*` from `.env` on every run; a missing ping triggers an email. This (not launchd) is what catches a shut-down Mac or a wiped venv.
+- **After editing a plist:** re-copy to `~/Library/LaunchAgents/` and `launchctl bootout` + `bootstrap` it (commands in README).
 - **Pre-deadline rival picks:** the Friday 5:30pm run usually fires before the GW deadline, so rival picks return 404 or stale. The Saturday 10am run is the canonical capture; Friday is a safety net.
 
 ## Key decisions worth knowing
@@ -107,6 +114,9 @@ Some pre-deadline rivals return `404` from the picks endpoint, others return las
 **10. Season rollover: `season` column + identity archives (migration 0005).**
 FPL re-issues player IDs, team IDs (1–20) and fixture IDs every season. Migration 0005 added a `season` column (text, `'2025/26'` format, derived from GW1's deadline year) to `player_history`, `fixtures`, `user_team_snapshots`, `rival_team_snapshots`, rebuilt each PK to include it, and both engines stamp it on every row. Because next season's ingestion overwrites `players_master`/`teams` with re-issued IDs, `fpl_engine.py` archives the final snapshots into `players_season_archive`/`teams_season_archive` at season end (all GWs finished), then exits early on subsequent off-season runs until the new API goes live. Historical-season joins to `players_master`/`teams` are **wrong by design** — join the archive tables instead. All curated queries filter to the latest season (Phase 1 queries anchor on `max(season) from fixtures`, Phase 2 queries on the latest `(season, gw)` in `rival_team_snapshots`), so they never blend seasons and switch over automatically.
 
+**11. Phase 3A hardening: instrumented runs + launchd + daily light mode (July 2026).**
+Motivated by a real incident: the July 2026 system-Python wipe deleted `.venv/`, and four scheduled cron runs failed/vanished with zero alerting (harmless only because the season had ended). Both engines now (a) assert the expected schema at startup and exit loudly naming the missing migration, (b) insert a row into `pipeline_runs` for every run including early exits, and (c) ping healthchecks.io if `HEALTHCHECK_URL_*` is set — absence of a ping is the alert. Scheduling moved from cron to launchd (`launchd/` plists) because launchd fires missed jobs on wake. The daily `--daily` mode exists because price changes and injury news move daily but the old cadence only looked on Fridays. `pipeline_runs` is also what Phase 3B's agent freshness check will read.
+
 ## Files
 
 ```
@@ -122,6 +132,7 @@ FPL re-issues player IDs, team IDs (1–20) and fixture IDs every season. Migrat
 ├── .env                                   # local-only, gitignored
 ├── .gitignore
 ├── logs/                                  # gitignored; both engines log here
+├── launchd/                               # LaunchAgent plists (scheduling)
 ├── sql/
 │   └── queries/                           # curated analytics queries (Phase 1 + 2)
 └── supabase/
@@ -130,7 +141,9 @@ FPL re-issues player IDs, team IDs (1–20) and fixture IDs every season. Migrat
         ├── 0002_add_xgc_to_history.sql    # per-GW xgc
         ├── 0003_add_fixtures.sql          # fixtures table
         ├── 0004_phase2_user_and_rivals.sql  # user + rivals tables
-        └── 0005_season_rollover.sql       # season column + identity archives
+        ├── 0005_season_rollover.sql       # season column + identity archives
+        ├── 0006_player_availability_fields.sql  # status/news/transfer-momentum on players_master
+        └── 0007_player_daily_and_pipeline_runs.sql  # daily time series + run log
 ```
 
 (Plus `.venv/` — gitignored project venv that cron runs the engines through, and `docs/` — phase-planning context for Claude Chat.)
@@ -138,7 +151,9 @@ FPL re-issues player IDs, team IDs (1–20) and fixture IDs every season. Migrat
 ## Schema cheat sheet
 
 - **`teams`** — 20 rows, one per Premier League club + strength ratings
-- **`players_master`** — current snapshot, one row per player (~840 by mid-season), includes derived fields (`price`, `points_per_90`, `price_per_point`, `cbit`). `xgc` here is season cumulative.
+- **`players_master`** — current snapshot, one row per player (~840 by mid-season), includes derived fields (`price`, `points_per_90`, `price_per_point`, `cbit`). `xgc` here is season cumulative. Since migration 0006 also carries availability (`status`, `news`, `chance_of_playing_next_round`) and transfer momentum (`transfers_in_event`/`out_event`, `cost_change_event` in £m).
+- **`player_daily`** — Phase 3A. One row per `(season, player_id, as_of_date)`: price, ownership, transfer momentum, availability, form. Written by the daily light run; the price-trend/news time series the weekly cadence can't see.
+- **`pipeline_runs`** — Phase 3A. One row per engine run (any mode, any outcome): engine, season, gw, rows_written, duration, status, detail. Silence here means "the run never happened". Phase 3B's freshness check reads this.
 - **`player_history`** — per-GW time series, PK `(season, player_id, gw)`. Stats are PER gameweek, not cumulative. Includes `xgc` per GW (added in migration 0002).
 - **`team_history`** — view aggregating `player_history` to team level per (season, GW). `team_xgc` is `MAX(xgc)` across team's players (sum would overcount since xgc scales with minutes — see migration 0002 for rationale).
 - **`fixtures`** — every fixture per season (past + future), PK `(season, id)`. Includes FDR (`home_difficulty`/`away_difficulty`), kickoff time, scores (null until `finished=true`). Added in migration 0003 for matchup projection queries.
@@ -156,6 +171,8 @@ FPL re-issues player IDs, team IDs (1–20) and fixture IDs every season. Migrat
 - **0003** — adds `fixtures` table. Re-run `fpl_engine.py` after applying to populate.
 - **0004** — Phase 2. Adds `tracked_leagues`, `user_team_snapshots`, `league_rivals`, `rival_team_snapshots`. Apply, then insert at least one row into `tracked_leagues`, then run `fpl_user_engine.py`. (Brief specified `0003_phase2_user_and_rivals.sql` but `0003` was taken — see decision #6.)
 - **0005** — season rollover. Adds `season` to the four time-series tables (backfilled as `'2025/26'`), rebuilds their PKs, recreates `team_history` with season, and creates + seeds `players_season_archive`/`teams_season_archive`. **Must be applied before the first 2026/27 engine run** — the engines write a `season` column from this migration onward and fail against an un-migrated database.
+- **0006** — Phase 3A. Adds availability + transfer-momentum columns to `players_master`. Idempotent (`add column if not exists`).
+- **0007** — Phase 3A. Creates `player_daily` + `pipeline_runs`. Both engines' startup schema assert requires 0006 + 0007 — they exit loudly naming the missing migration until it's applied.
 
 ## Conventions
 
@@ -172,4 +189,4 @@ FPL re-issues player IDs, team IDs (1–20) and fixture IDs every season. Migrat
 - For Phase 2 changes: stay in `fpl_user_engine.py` and the four Phase 2 tables. Do not modify `fpl_engine.py` or Phase 1 tables — the two engines are intentionally separate.
 - For new phases: ask the user for the next brief before starting. Each phase has its own brief.
 - For schema changes: never modify a migration file after it's been applied. Create a new migration file (next sequential number) and add it.
-- For deployment changes: cron entries are in `crontab -l`, tagged `# fpl-sniper-fetch` (Phase 1) and `# fpl-sniper-user` (Phase 2). Don't touch other entries (Transfez Market Monitoring uses the same crontab).
+- For deployment changes: scheduling is launchd (`launchd/` plists in the repo, installed to `~/Library/LaunchAgents/`, labels `com.fplsniper.*`). Edit the repo copy, re-copy, and `launchctl bootout` + `bootstrap`. The crontab no longer has FPL entries — don't touch what's there (Transfez Market Monitoring).

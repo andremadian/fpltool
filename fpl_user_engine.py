@@ -8,6 +8,10 @@ Squad snapshots are stamped with the season (e.g. '2025/26') because FPL
 re-issues player and team IDs each season. Once every gameweek is finished
 the run exits early until the new season's API goes live.
 
+Every run — including early exits — records a row in pipeline_runs and
+pings its healthchecks.io URL (if configured), so a missing row/ping always
+means "the run never happened".
+
 Separate from fpl_engine.py (Phase 1) which ingests global FPL data.
 """
 
@@ -53,6 +57,62 @@ def get_supabase_client() -> Client:
     url = os.environ["SUPABASE_URL"]
     key = os.environ["SUPABASE_SERVICE_ROLE_KEY"]
     return create_client(url, key)
+
+
+# (table, column, migration that provides it) — checked at startup so an
+# un-migrated database fails loudly with instructions instead of mid-run.
+SCHEMA_CHECKS = [
+    ("rival_team_snapshots", "season", "0005_season_rollover.sql"),
+    ("pipeline_runs", "engine", "0007_player_daily_and_pipeline_runs.sql"),
+]
+
+
+def assert_schema(supabase: Client) -> None:
+    """Fail loudly at startup if an expected migration hasn't been applied."""
+    for table, column, migration in SCHEMA_CHECKS:
+        try:
+            supabase.table(table).select(column).limit(1).execute()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Schema check failed on {table}.{column} — apply "
+                f"supabase/migrations/{migration} in the Supabase SQL Editor, "
+                f"then re-run. ({exc})"
+            ) from exc
+
+
+def log_pipeline_run(
+    supabase: Client,
+    season: str | None,
+    gw: int | None,
+    rows_written: int,
+    duration_seconds: float,
+    status: str,
+    detail: str | None,
+) -> None:
+    """Record the run in pipeline_runs; never let logging kill the run itself."""
+    try:
+        supabase.table("pipeline_runs").insert({
+            "engine": "fpl_user_engine",
+            "season": season,
+            "gw": gw,
+            "rows_written": rows_written,
+            "duration_seconds": duration_seconds,
+            "status": status,
+            "detail": detail,
+        }).execute()
+    except Exception as exc:
+        logger.warning("Could not record pipeline run (is migration 0007 applied?): %s", exc)
+
+
+def ping_healthcheck(ok: bool) -> None:
+    """Ping the dead-man switch; a missing ping is what triggers the alert email."""
+    url = os.environ.get("HEALTHCHECK_URL_USER", "").strip()
+    if not url:
+        return
+    try:
+        requests.get(url if ok else url.rstrip("/") + "/fail", timeout=10)
+    except Exception as exc:
+        logger.warning("Healthcheck ping failed (HEALTHCHECK_URL_USER): %s", exc)
 
 
 def load_tracked_leagues(supabase: Client) -> list[dict[str, Any]]:
@@ -337,41 +397,70 @@ def write_rival_squads(rows: list[dict[str, Any]], supabase: Client) -> None:
 
 
 def main() -> None:
-    """Run the Phase 2 user + rivals ingestion pipeline."""
+    """Run the Phase 2 user + rivals ingestion pipeline, fully instrumented."""
     started = time.monotonic()
     supabase = get_supabase_client()
 
-    leagues = load_tracked_leagues(supabase)
-    if not leagues:
-        logger.warning("No rows in tracked_leagues — insert league config and re-run. Exiting.")
-        return
+    status = "success"
+    detail: str | None = None
+    rows_written = 0
+    season: str | None = None
+    current_gw: int | None = None
+    try:
+        assert_schema(supabase)
 
-    bootstrap = fetch_bootstrap()
-    season = determine_season(bootstrap)
-    if season_is_complete(bootstrap):
+        leagues = load_tracked_leagues(supabase)
+        if not leagues:
+            status = "skipped_no_config"
+            detail = "no rows in tracked_leagues"
+            logger.warning(
+                "No rows in tracked_leagues — insert league config and re-run. Exiting."
+            )
+            return
+
+        bootstrap = fetch_bootstrap()
+        season = determine_season(bootstrap)
+        if season_is_complete(bootstrap):
+            status = "skipped_offseason"
+            detail = "season complete; no live gameweeks to capture"
+            logger.info(
+                "Season %s is complete — no live gameweeks to capture. Exiting.", season,
+            )
+            return
+
+        current_gw = determine_current_gw(bootstrap)
+        if current_gw is None:
+            status = "failed"
+            detail = "no current or next gameweek in bootstrap-static"
+            logger.warning("No current or next gameweek found in bootstrap-static. Exiting.")
+            return
+        logger.info("Targeting season %s, gameweek %d", season, current_gw)
+
+        fetch_and_write_my_squads(leagues, current_gw, season, supabase)
+        write_league_standings(leagues, supabase)
+
+        rival_ids = load_unique_rival_ids(supabase)
+        rival_rows, skipped = fetch_rival_squads(rival_ids, current_gw, season)
+        write_rival_squads(rival_rows, supabase)
+
+        rows_written = len(rival_rows) + len(leagues)
+        detail = f"{len(rival_rows)} rival snapshots, {skipped} pre-deadline skips"
+        duration = round(time.monotonic() - started, 1)
         logger.info(
-            "Season %s is complete — no live gameweeks to capture. Exiting.", season,
+            "Phase 2 run complete: %d leagues, %d rivals, %d squad snapshots, "
+            "%d pre-deadline skips, %ss",
+            len(leagues), len(rival_ids), len(rival_rows), skipped, duration,
         )
-        return
-
-    current_gw = determine_current_gw(bootstrap)
-    if current_gw is None:
-        logger.warning("No current or next gameweek found in bootstrap-static. Exiting.")
-        return
-    logger.info("Targeting season %s, gameweek %d", season, current_gw)
-
-    fetch_and_write_my_squads(leagues, current_gw, season, supabase)
-    write_league_standings(leagues, supabase)
-
-    rival_ids = load_unique_rival_ids(supabase)
-    rival_rows, skipped = fetch_rival_squads(rival_ids, current_gw, season)
-    write_rival_squads(rival_rows, supabase)
-
-    duration = round(time.monotonic() - started, 1)
-    logger.info(
-        "Phase 2 run complete: %d leagues, %d rivals, %d squad snapshots, %d pre-deadline skips, %ss",
-        len(leagues), len(rival_ids), len(rival_rows), skipped, duration,
-    )
+    except Exception as exc:
+        status = "failed"
+        detail = str(exc)[:500]
+        logger.exception("fpl_user_engine run failed")
+        raise SystemExit(1) from exc
+    finally:
+        duration = round(time.monotonic() - started, 1)
+        log_pipeline_run(supabase, season, current_gw, rows_written, duration, status, detail)
+        ping_healthcheck(ok=(status != "failed"))
+        logger.info("fpl_user_engine finished: status=%s duration=%ss", status, duration)
 
 
 if __name__ == "__main__":

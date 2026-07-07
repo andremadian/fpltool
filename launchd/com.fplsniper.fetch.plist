@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.fplsniper.fetch</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/andremadian/Documents/1. PROJECTS/PERSONAL AGENTIC AI/FPL Tool/.venv/bin/python</string>
+		<string>fpl_engine.py</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/andremadian/Documents/1. PROJECTS/PERSONAL AGENTIC AI/FPL Tool</string>
+	<key>StandardOutPath</key>
+	<string>/Users/andremadian/Documents/1. PROJECTS/PERSONAL AGENTIC AI/FPL Tool/logs/cron.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/andremadian/Documents/1. PROJECTS/PERSONAL AGENTIC AI/FPL Tool/logs/cron.log</string>
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Weekday</key>
+		<integer>5</integer>
+		<key>Hour</key>
+		<integer>17</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+</dict>
+</plist>

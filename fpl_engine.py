@@ -1,20 +1,32 @@
 """FPL Sniper global ingestion pipeline.
 
 Fetches Fantasy Premier League data from the public API and upserts it into
-Supabase Postgres. Runs weekly via local cron (Friday 5pm WIB).
+Supabase Postgres. Two modes, both scheduled via launchd (see launchd/):
+
+  weekly (default) — full run, Friday 5pm WIB: snapshot + per-player
+      history crawl + fixtures (~2.5 minutes)
+  --daily          — light run, 9am WIB: one bootstrap call, refreshes the
+      players_master snapshot and appends today's price/ownership/news row
+      per player to player_daily (~5 seconds)
 
 Every time-series row is stamped with the season it belongs to (e.g.
 '2025/26') because FPL re-issues player, team and fixture IDs each season.
 At season end (all gameweeks finished) the run archives the final
 players_master + teams snapshots into the season archive tables, then
 subsequent off-season runs exit early until the new season's API goes live.
+
+Every run — including off-season early exits — records a row in
+pipeline_runs and pings its healthchecks.io URL (if configured), so a
+missing row/ping always means "the run never happened".
 """
 
+import argparse
 import json
 import logging
 import os
 import random
 import time
+from datetime import date
 from typing import Any
 
 import pandas as pd
@@ -51,6 +63,65 @@ def get_supabase_client() -> Client:
     return create_client(url, key)
 
 
+# (table, column, migration that provides it) — checked at startup so an
+# un-migrated database fails loudly with instructions instead of mid-run.
+SCHEMA_CHECKS = [
+    ("players_season_archive", "id", "0005_season_rollover.sql"),
+    ("players_master", "status", "0006_player_availability_fields.sql"),
+    ("player_daily", "as_of_date", "0007_player_daily_and_pipeline_runs.sql"),
+    ("pipeline_runs", "engine", "0007_player_daily_and_pipeline_runs.sql"),
+]
+
+
+def assert_schema(supabase: Client) -> None:
+    """Fail loudly at startup if an expected migration hasn't been applied."""
+    for table, column, migration in SCHEMA_CHECKS:
+        try:
+            supabase.table(table).select(column).limit(1).execute()
+        except Exception as exc:
+            raise RuntimeError(
+                f"Schema check failed on {table}.{column} — apply "
+                f"supabase/migrations/{migration} in the Supabase SQL Editor, "
+                f"then re-run. ({exc})"
+            ) from exc
+
+
+def log_pipeline_run(
+    supabase: Client,
+    engine: str,
+    season: str | None,
+    gw: int | None,
+    rows_written: int,
+    duration_seconds: float,
+    status: str,
+    detail: str | None,
+) -> None:
+    """Record the run in pipeline_runs; never let logging kill the run itself."""
+    try:
+        supabase.table("pipeline_runs").insert({
+            "engine": engine,
+            "season": season,
+            "gw": gw,
+            "rows_written": rows_written,
+            "duration_seconds": duration_seconds,
+            "status": status,
+            "detail": detail,
+        }).execute()
+    except Exception as exc:
+        logger.warning("Could not record pipeline run (is migration 0007 applied?): %s", exc)
+
+
+def ping_healthcheck(env_key: str, ok: bool) -> None:
+    """Ping the dead-man switch; a missing ping is what triggers the alert email."""
+    url = os.environ.get(env_key, "").strip()
+    if not url:
+        return
+    try:
+        requests.get(url if ok else url.rstrip("/") + "/fail", timeout=10)
+    except Exception as exc:
+        logger.warning("Healthcheck ping failed (%s): %s", env_key, exc)
+
+
 def fetch_bootstrap() -> dict[str, Any]:
     """Fetch the FPL bootstrap-static snapshot (teams, players, gameweeks)."""
     logger.info("Fetching bootstrap-static from FPL API")
@@ -66,6 +137,16 @@ def determine_season(data: dict[str, Any]) -> str:
         raise ValueError("bootstrap-static has no events; cannot determine season")
     start_year = int(events[0]["deadline_time"][:4])
     return f"{start_year}/{(start_year + 1) % 100:02d}"
+
+
+def determine_current_gw(data: dict[str, Any]) -> int | None:
+    """Current gameweek id, falling back to the next GW between gameweeks."""
+    events = data.get("events", [])
+    for key in ("is_current", "is_next"):
+        for event in events:
+            if event.get(key):
+                return event["id"]
+    return None
 
 
 def season_is_complete(data: dict[str, Any]) -> bool:
@@ -117,6 +198,43 @@ def archive_season_identities(data: dict[str, Any], season: str, supabase: Clien
     )
 
 
+def _availability_fields(raw: pd.DataFrame) -> dict[str, Any]:
+    """Availability + transfer-momentum columns, defensive against API renames.
+
+    The FPL API has renamed/dropped fields before; missing ones get safe
+    defaults so a rename degrades the data instead of killing the run.
+    cost_change_event arrives in tenths and is stored in £m, matching price.
+    """
+    expected = (
+        "status", "news", "chance_of_playing_next_round",
+        "transfers_in_event", "transfers_out_event", "cost_change_event",
+    )
+    missing = [c for c in expected if c not in raw.columns]
+    if missing:
+        logger.warning("FPL API missing fields %s; storing defaults", missing)
+
+    def has(col: str) -> bool:
+        return col not in missing
+
+    return {
+        "status": raw["status"] if has("status") else None,
+        "news": raw["news"] if has("news") else None,
+        "chance_of_playing_next_round": (
+            pd.to_numeric(raw["chance_of_playing_next_round"], errors="coerce").astype("Int64")
+            if has("chance_of_playing_next_round") else None
+        ),
+        "transfers_in_event": (
+            raw["transfers_in_event"].fillna(0).astype(int) if has("transfers_in_event") else 0
+        ),
+        "transfers_out_event": (
+            raw["transfers_out_event"].fillna(0).astype(int) if has("transfers_out_event") else 0
+        ),
+        "cost_change_event": (
+            raw["cost_change_event"].fillna(0).astype(int) / 10 if has("cost_change_event") else 0
+        ),
+    }
+
+
 def write_snapshot(data: dict[str, Any], supabase: Client) -> None:
     """Clean teams + players from bootstrap and upsert into snapshot tables."""
     teams_df = pd.DataFrame(data["teams"])[[
@@ -162,11 +280,33 @@ def write_snapshot(data: dict[str, Any], supabase: Client) -> None:
         "ict_index": pd.to_numeric(raw["ict_index"], errors="coerce"),
         "form": pd.to_numeric(raw["form"], errors="coerce"),
         "minutes": minutes,
+        **_availability_fields(raw),
     })
 
     players_rows = json.loads(snapshot_df.to_json(orient="records"))
     supabase.table("players_master").upsert(players_rows).execute()
     logger.info("Upserted %d players", len(players_rows))
+
+
+def write_player_daily(data: dict[str, Any], season: str, supabase: Client) -> int:
+    """Append today's per-player price/ownership/news row to player_daily."""
+    raw = pd.DataFrame(data["elements"])
+    daily_df = pd.DataFrame({
+        "season": season,
+        "player_id": raw["id"],
+        "as_of_date": date.today().isoformat(),
+        "price": raw["now_cost"] / 10,
+        "ownership": pd.to_numeric(raw["selected_by_percent"], errors="coerce"),
+        "form": pd.to_numeric(raw["form"], errors="coerce"),
+        "total_points": raw["total_points"],
+        **_availability_fields(raw),
+    })
+
+    rows = json.loads(daily_df.to_json(orient="records"))
+    for start in range(0, len(rows), HISTORY_BATCH_SIZE):
+        supabase.table("player_daily").upsert(rows[start : start + HISTORY_BATCH_SIZE]).execute()
+    logger.info("Upserted %d player_daily rows for %s", len(rows), date.today().isoformat())
+    return len(rows)
 
 
 def _to_float_or_none(value: Any) -> float | None:
@@ -316,29 +456,67 @@ def write_fixtures(rows: list[dict[str, Any]], supabase: Client) -> None:
 
 
 def main() -> None:
-    """Run the full ingestion pipeline, stamped with the current season."""
+    """Run the ingestion pipeline (weekly full or --daily light), fully instrumented."""
+    parser = argparse.ArgumentParser(description="FPL Sniper global ingestion engine")
+    parser.add_argument(
+        "--daily",
+        action="store_true",
+        help="light run: refresh snapshot + append player_daily rows (no history crawl)",
+    )
+    args = parser.parse_args()
+
+    engine_label = "fpl_engine --daily" if args.daily else "fpl_engine"
+    healthcheck_key = "HEALTHCHECK_URL_DAILY" if args.daily else "HEALTHCHECK_URL_WEEKLY"
+
+    started = time.monotonic()
     supabase = get_supabase_client()
-    data = fetch_bootstrap()
-    season = determine_season(data)
-    logger.info("Ingesting season %s", season)
 
-    season_over = season_is_complete(data)
-    if season_over and season_already_archived(season, supabase):
-        logger.info(
-            "Season %s is complete and already archived — nothing to ingest "
-            "until the new season's API goes live. Exiting.", season,
-        )
-        return
+    status = "success"
+    detail: str | None = None
+    rows_written = 0
+    season: str | None = None
+    gw: int | None = None
+    try:
+        assert_schema(supabase)
+        data = fetch_bootstrap()
+        season = determine_season(data)
+        gw = determine_current_gw(data)
+        logger.info("Ingesting season %s (%s mode)", season, "daily" if args.daily else "weekly")
 
-    write_snapshot(data, supabase)
-    history_rows = fetch_player_history(data, season)
-    write_history(history_rows, supabase)
-    fixtures = fetch_fixtures(season)
-    write_fixtures(fixtures, supabase)
+        season_over = season_is_complete(data)
+        if season_over and season_already_archived(season, supabase):
+            status = "skipped_offseason"
+            detail = "season complete and archived; waiting for the new season's API"
+            logger.info(
+                "Season %s is complete and already archived — nothing to ingest "
+                "until the new season's API goes live. Exiting.", season,
+            )
+        elif args.daily:
+            write_snapshot(data, supabase)
+            rows_written = write_player_daily(data, season, supabase)
+            detail = f"snapshot refreshed + {rows_written} player_daily rows"
+        else:
+            write_snapshot(data, supabase)
+            history_rows = fetch_player_history(data, season)
+            write_history(history_rows, supabase)
+            fixtures = fetch_fixtures(season)
+            write_fixtures(fixtures, supabase)
+            rows_written = len(history_rows) + len(fixtures)
+            detail = f"{len(history_rows)} history rows + {len(fixtures)} fixtures"
 
-    # Final run of the season: preserve who each re-issuable ID referred to.
-    if season_over:
-        archive_season_identities(data, season, supabase)
+            # Final run of the season: preserve who each re-issuable ID referred to.
+            if season_over:
+                archive_season_identities(data, season, supabase)
+    except Exception as exc:
+        status = "failed"
+        detail = str(exc)[:500]
+        logger.exception("%s run failed", engine_label)
+        raise SystemExit(1) from exc
+    finally:
+        duration = round(time.monotonic() - started, 1)
+        log_pipeline_run(supabase, engine_label, season, gw, rows_written, duration, status, detail)
+        ping_healthcheck(healthcheck_key, ok=(status != "failed"))
+        logger.info("%s finished: status=%s duration=%ss", engine_label, status, duration)
 
 
 if __name__ == "__main__":

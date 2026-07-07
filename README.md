@@ -6,14 +6,17 @@ A daily Python script that fetches Fantasy Premier League data and writes it to 
 
 ```
 .
-├── fpl_engine.py                          # the ingestion script
+├── fpl_engine.py                          # global ingestion (weekly full + --daily light run)
+├── fpl_user_engine.py                     # user + rivals ingestion (Phase 2)
 ├── requirements.txt                       # Python dependencies
 ├── .env.example                           # template for local env vars
 ├── .gitignore
 ├── README.md
+├── docs/                                  # phase planning + expansion roadmap
+├── launchd/                               # LaunchAgent plists (scheduling — see below)
+├── sql/queries/                           # curated analytics queries
 └── supabase/
-    └── migrations/
-        └── 0001_initial_schema.sql        # database schema
+    └── migrations/                        # apply in numeric order (0001 → 0007)
 ```
 
 ## What it does
@@ -27,6 +30,8 @@ Each run, the script:
 5. Upserts all 380 fixtures (FDR, kickoff times, scores)
 
 Every time-series row is stamped with the season, because FPL re-issues player/team/fixture IDs each season (see **Season rollover** below). The full run takes ~2–3 minutes and is idempotent — re-running just updates rows.
+
+There is also a **daily light run** (`fpl_engine.py --daily`, ~5 seconds): one bootstrap call that refreshes the `players_master` snapshot and appends today's price/ownership/availability row per player to `player_daily` — the price-change and injury-news signals the weekly cadence can't see. Every run of either engine (including off-season early exits) records a row in `pipeline_runs` and pings a healthchecks.io URL if configured, so a missing row/ping always means "the run never happened".
 
 ---
 
@@ -46,13 +51,13 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-The project venv keeps the pipeline immune to system-Python upgrades/removals — the cron entries point at `.venv/bin/python`, not whatever `python3` happens to resolve to.
+The project venv keeps the pipeline isolated from system-Python upgrades/removals — the LaunchAgents point at `.venv/bin/python`, not whatever `python3` happens to resolve to. (A system-Python wipe still deletes the venv itself — that's what the schema assert + healthchecks catch; see the season-start runbook.)
 
 ### 2. Apply the database schema
 
 In your Supabase dashboard:
 1. Open **SQL Editor**
-2. Paste and run each file in `supabase/migrations/` **in numeric order** (0001 → 0005)
+2. Paste and run each file in `supabase/migrations/` **in numeric order** (0001 → 0007)
 
 You should see "Success. No rows returned." This is correct — `CREATE TABLE` statements don't return data. If Supabase shows a Row Level Security warning, click **"Run without RLS"** — the data tables (`teams`, `players_master`, `player_history`) are intentionally public-readable; RLS is only applied to user-related tables.
 
@@ -68,6 +73,7 @@ Then edit `.env`:
 
 - `SUPABASE_URL` — Settings → **Data API** → Project URL (looks like `https://<ref>.supabase.co`)
 - `SUPABASE_SERVICE_ROLE_KEY` — Settings → **API Keys** → **Secret key** (`sb_secret_...`). ⚠️ **Not** the publishable key.
+- `HEALTHCHECK_URL_WEEKLY` / `HEALTHCHECK_URL_DAILY` / `HEALTHCHECK_URL_USER` — optional. Create three checks at [healthchecks.io](https://healthchecks.io) (free tier), one per schedule, and paste each check's ping URL. The engines ping on every run; healthchecks emails you when a ping **doesn't** arrive — the dead-man switch that catches a sleeping Mac, a wiped venv, or any other silent failure. Leave unset to disable.
 
 `.env` is gitignored — it will not be committed.
 
@@ -81,7 +87,44 @@ Expected output: log lines for upserting teams (20), players (~840), history (~1
 
 ---
 
-## Deploy to Railway (daily cron)
+## Scheduling — launchd (the default)
+
+Both engines run on local macOS **launchd** LaunchAgents (migrated from cron in July 2026 — launchd runs a missed scheduled job when the Mac wakes from sleep; cron just skips it). The plists live in [`launchd/`](launchd/):
+
+| Agent | Schedule (local/WIB) | Runs |
+|---|---|---|
+| `com.fplsniper.daily` | every day 9:00am | `fpl_engine.py --daily` (light run, ~5s) |
+| `com.fplsniper.fetch` | Friday 5:00pm | `fpl_engine.py` (full run, ~2.5min) |
+| `com.fplsniper.user` | Friday 5:30pm + Saturday 10:00am | `fpl_user_engine.py` |
+
+Install (or re-install after editing a plist):
+
+```bash
+cp launchd/com.fplsniper.*.plist ~/Library/LaunchAgents/
+for name in fetch daily user; do
+  launchctl bootout gui/$(id -u)/com.fplsniper.$name 2>/dev/null
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.fplsniper.$name.plist
+done
+launchctl list | grep fplsniper   # all three should appear
+```
+
+Both engines append to `logs/cron.log` (gitignored). To trigger a run manually: `launchctl kickstart gui/$(id -u)/com.fplsniper.daily`. To roll back to cron: `launchctl bootout` the three agents and re-add the crontab lines from git history.
+
+**Limits, honestly:** launchd catches sleep, not shutdown, and a scheduling fix can't catch a broken runtime (the July 2026 venv wipe). Detection is the healthchecks.io dead-man switch (see env vars above) plus the schema assert both engines run at startup — an un-migrated database or dead venv now fails loudly with instructions instead of silently.
+
+## Season-start runbook (~August, before GW1)
+
+Ten minutes, once a year. The June–July 2026 incident (system-Python wipe killed the venv; four scheduled runs vanished without a trace) is why this exists.
+
+1. **Venv alive?** `.venv/bin/python -c "import supabase; print(supabase.__version__)"` — if it fails: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
+2. **Migrations applied?** `.venv/bin/python fpl_engine.py --daily` — the startup schema assert names any missing migration; apply it in Supabase SQL Editor and re-run until the run succeeds.
+3. **Agents loaded?** `launchctl list | grep fplsniper` — three entries; re-install per above if not.
+4. **Dead-man switch armed?** All three `HEALTHCHECK_URL_*` vars set in `.env`, and the checks show a fresh ping after step 2's run.
+5. **Dry-run the weekly:** `.venv/bin/python fpl_engine.py` then `.venv/bin/python fpl_user_engine.py` — check the summary lines and a new row each in `pipeline_runs`.
+
+---
+
+## Deploy to Railway (alternative, if local reliability isn't enough)
 
 Railway runs your script on a schedule using its built-in cron feature. Free tier covers this comfortably — the script runs once a day for ~3 minutes.
 
@@ -193,7 +236,7 @@ Additive layer on top of Phase 1. Captures **my own FPL squad** and the **squads
 - **`fpl_user_engine.py`** — separate script that fetches user + rivals data and upserts into Supabase. Six-step pipeline: load config → my squad → league standings → rival squads → batch upsert → summary log.
 - **Migration `0004_phase2_user_and_rivals.sql`** — adds four new tables: `tracked_leagues`, `user_team_snapshots`, `league_rivals`, `rival_team_snapshots`.
 - **Four curated SQL queries** under `sql/queries/` for "me vs rivals" analysis.
-- **Two new cron entries** — runs Friday 5:30pm + Saturday 10am WIB.
+- **One LaunchAgent with two firings** — Friday 5:30pm + Saturday 10am WIB (`com.fplsniper.user`).
 
 Phase 1's `fpl_engine.py` is untouched. Phase 2 reads from Phase 1 tables (e.g. `players_master.ownership`) but doesn't write to them.
 
@@ -233,18 +276,9 @@ Look for the summary line at the end:
 Phase 2 run complete: N leagues, N rivals, N squad snapshots, N pre-deadline skips, Ns
 ```
 
-### 4. Cron — two runs per week
+### 4. Scheduling — two runs per week
 
-Append to your existing crontab (`crontab -e`). The Phase 1 entry (Friday 5pm) stays unchanged. Both engines run via the project venv and `cd` into the repo first so `.env` and `logs/` resolve:
-
-```cron
-0 17 * * 5 cd "/path/to/FPL Tool" && .venv/bin/python fpl_engine.py >> logs/cron.log 2>&1 # fpl-sniper-fetch
-30 17 * * 5 cd "/path/to/FPL Tool" && .venv/bin/python fpl_user_engine.py >> logs/cron.log 2>&1 # fpl-sniper-user
-0 10 * * 6 cd "/path/to/FPL Tool" && .venv/bin/python fpl_user_engine.py >> logs/cron.log 2>&1 # fpl-sniper-user
-```
-
-- **Friday 5:30pm WIB** — 30 minutes after Phase 1 finishes, so global data is fresh.
-- **Saturday 10am WIB** — captures rival squads after the typical Saturday-morning UK deadline. This is the canonical capture; Friday is a safety net.
+Handled by the `com.fplsniper.user` LaunchAgent (see **Scheduling — launchd** above): Friday 5:30pm WIB (30 minutes after Phase 1 finishes, so global data is fresh) and Saturday 10am WIB (captures rival squads after the typical Saturday-morning UK deadline — the canonical capture; Friday is a safety net).
 
 ## Important caveat — pre-deadline behavior
 
