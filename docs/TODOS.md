@@ -8,15 +8,16 @@
 - [ ] **Set git identity** — `git config --global user.name / user.email`; optionally amend unpushed commits (`--reset-author`) before pushing.
 - [ ] **Push to GitHub** — local `main` is ahead of origin (expansion plan, Phase 3A, Phase 3B brief).
 
-## Next (Phase 3B — conversational agent)
+## Next (Phase 3B — personal edge PWA; AI agent deferred)
 
-Brief: [FPL_Sniper_Phase3B_ClaudeCode_Brief.md](../FPL_Sniper_Phase3B_ClaudeCode_Brief.md). Three sessions, each ends with a commit:
+Brief: [FPL_Sniper_Phase3B_PWA_Brief.md](../FPL_Sniper_Phase3B_PWA_Brief.md) (the [agent brief](../FPL_Sniper_Phase3B_ClaudeCode_Brief.md) is deferred — revive as a PWA chat tab only if fixed views prove insufficient). Four sessions, each ends with a commit:
 
-- [ ] **Session 1 — agent core + CLI**: migration 0008 (seed user + `run_readonly_query`), `fpl_agent.py` (4 tools, SQL guard, Claude loop, persistence), `fpl_chat.py --cli`. Done criteria 1–4.
-- [ ] **Session 2 — Telegram front-end**: BotFather token + chat id (Andre), sync long-poll loop, allowlist, chunking. Done criterion 5.
-- [ ] **Session 3 — evals + install**: `evals/` golden questions + guard tests, `com.fplsniper.chat` KeepAlive plist, README/CLAUDE.md updates. Done criteria 6–10.
+- [ ] **Session 1 — foundation & lockdown**: migration 0008 (RLS lockdown + `gameweeks` + 9 views), Supabase auth setup (invite email, disable signups, redirect URLs), `write_gameweeks` in `fpl_engine.py`. Done criteria 1–5. *Do this before any UI — it closes the anon-key write hole.*
+- [ ] **Session 2 — shell + This week + Transfers**: Vite scaffold in `web/`, magic-link login, tab shell + freshness badge, tabs 1–2 with empty states.
+- [ ] **Session 3 — Rivals + Chart maker**: tabs 3–4 (bubble chart: x/y/size metric pickers, my-squad highlight). Done criteria 6–7.
+- [ ] **Session 4 — PWA polish + deploy**: manifest/service worker (network-only for Supabase), install tests (iOS + Android), Vercel deploy, docs. Done criteria 8–11.
 
-User-side prerequisites for 3B: an Anthropic API key (`ANTHROPIC_API_KEY`), a Telegram bot token from @BotFather, your Telegram chat id.
+User-side prerequisites for 3B: a Vercel account (free Hobby tier), and the Supabase dashboard auth steps in the brief (invite your email, disable sign-ups). No API keys, no recurring cost.
 
 ## Then (Phase 4 — the Sniper Brief)
 

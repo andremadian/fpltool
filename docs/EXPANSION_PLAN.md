@@ -188,10 +188,12 @@ SQL-in-Studio research tool     chat agent + push brief,           you interroga
 | # | Decision | Recommendation | Status |
 |---|---|---|---|
 | 1 | Strategic goal (A/B/C) | A now, B-compatible architecture, C deferred | ✅ **ratified — option A** (July 7, 2026) |
-| 2 | Phase 3B interface | Telegram bot via sync `getUpdates` loop, CLI-first build | open (decide at 3B brief) |
-| 3 | Always-on chat listener | Mac + launchd KeepAlive, accept sleep gaps; free-tier box only if it hurts | open (decide at 3B brief) |
-| 4 | Auth approach | Seed one auth user (migration 0008), skip login flow | open (decide at 3B brief) |
+| 2 | Phase 3B interface | ~~Telegram bot~~ → **PWA, no AI** (4 tabs incl. chart maker) — user pivot, July 2026; see [PWA brief](../FPL_Sniper_Phase3B_PWA_Brief.md) | ✅ ratified — PWA |
+| 3 | Always-on chat listener | Moot for the PWA (static hosting); revisit only if the agent is revived | ⏸ deferred with the agent |
+| 4 | Auth approach | Supabase magic-link, single invited email, signups disabled, RLS allowlist (migration 0008) | ✅ ratified — in PWA brief |
 | 5 | Daily light-run cadence | Yes — `player_daily` + `pipeline_runs` (migration 0007) | ✅ accepted — shipped in Phase 3A |
 | 6 | launchd + healthchecks migration | Yes, before GW1 (~mid-August) — 3A is the deadline-bound phase | ✅ accepted — shipped in Phase 3A |
-| 7 | LLM budget | ~$5–15/month on claude-sonnet-5, revisit if usage grows | open (decide at 3B brief) |
+| 7 | LLM budget | $0 — AI deferred; was ~$5–15/month, becomes the bar the chat tab must clear to be revived | ✅ resolved by the pivot |
 | 8 | GH Actions ingestion | Defer to Phase 5 (local-first holds until others depend on it) | deferred by design |
+
+> **July 2026 amendment:** Phase 3B pivoted from the conversational agent to a **$0/month PWA** (This week / Transfers / Rivals / Chart maker, magic-link auth). Rationale: the moat is the data + rival graph, not the chat layer; the PWA is also the Phase 5 surface built early. Phase 3B (agent) sections below are superseded accordingly — the agent survives as a deferred add-on ([brief](../FPL_Sniper_Phase3B_ClaudeCode_Brief.md)). Phase 4's Sniper Brief becomes template-rendered (no LLM) in this PWA, with Web Push.

@@ -1,4 +1,8 @@
-# FPL Sniper — Phase 3B Brief: Conversational Agent (Claude Code)
+# FPL Sniper — Conversational Agent Brief (DEFERRED)
+
+> **⚠️ DEFERRED — July 2026.** This is no longer Phase 3B. The user chose a $0/month PWA as Phase 3B instead ([FPL_Sniper_Phase3B_PWA_Brief.md](FPL_Sniper_Phase3B_PWA_Brief.md)); the AI agent is deferred until fixed views prove insufficient — likely revived as a chat tab inside the PWA. **Migration numbering:** the "0008" below is stale — 0008 now belongs to the PWA foundation; renumber to the next free slot when reviving this brief. The read-only-SQL design, grounding rule, and eval harness here all remain valid and should be reused.
+
+# FPL Sniper — Phase 3B Brief (original): Conversational Agent (Claude Code)
 
 ## What you're building
 

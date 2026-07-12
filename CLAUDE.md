@@ -1,6 +1,6 @@
 # CLAUDE.md — Project context for Claude Code
 
-Read this first when working in this project. Detailed setup is in [README.md](README.md). The canonical source-of-truth for what each phase was supposed to build is the corresponding brief: [Phase 1](FPL_Sniper_Phase1_ClaudeCode_Brief.md), [Phase 2](FPL_Sniper_Phase2_ClaudeCode_Brief.md), [Phase 3B](FPL_Sniper_Phase3B_ClaudeCode_Brief.md). The ordered backlog is [docs/TODOS.md](docs/TODOS.md).
+Read this first when working in this project. Detailed setup is in [README.md](README.md). The canonical source-of-truth for what each phase was supposed to build is the corresponding brief: [Phase 1](FPL_Sniper_Phase1_ClaudeCode_Brief.md), [Phase 2](FPL_Sniper_Phase2_ClaudeCode_Brief.md), [Phase 3B — PWA](FPL_Sniper_Phase3B_PWA_Brief.md) (the [agent brief](FPL_Sniper_Phase3B_ClaudeCode_Brief.md) is deferred). The ordered backlog is [docs/TODOS.md](docs/TODOS.md).
 
 ## What this project is
 
@@ -13,7 +13,8 @@ The script fetches FPL data daily and writes it to Supabase Postgres. The user q
 | 1. Global data ingestion | ✅ shipped | `fpl_engine.py` + Supabase schema |
 | 2. User + rivals ingestion | ✅ shipped | `fpl_user_engine.py` + 4 new tables + 4 analytics SQL queries |
 | 3A. Pre-season hardening | ✅ shipped (Jul 2026) | daily light run, `player_daily` + `pipeline_runs`, launchd, dead-man alerting, schema assert |
-| 3B. Conversational layer | 📝 briefed (Jul 2026), not built | [Phase 3B brief](FPL_Sniper_Phase3B_ClaudeCode_Brief.md): Claude tool-use agent, CLI + Telegram, migration 0008, evals. 3 sessions. |
+| 3B. Personal edge PWA | 📝 briefed (Jul 2026), not built | [PWA brief](FPL_Sniper_Phase3B_PWA_Brief.md): 4-tab installable app (This week / Transfers / Rivals / Chart maker), magic-link auth, migration 0008 security lockdown + views + `gameweeks`. $0/month. 4 sessions. |
+| — AI chat agent | ⏸ deferred (Jul 2026) | [Agent brief](FPL_Sniper_Phase3B_ClaudeCode_Brief.md) kept for revival as a PWA chat tab if fixed views prove insufficient |
 | 4+. Sniper Brief, league surface | — | roadmap in [docs/EXPANSION_PLAN.md](docs/EXPANSION_PLAN.md) |
 
 Strategic direction (ratified July 2026): **option A — personal edge tool, built league-product-compatible.** Full market review + roadmap in [docs/EXPANSION_PLAN.md](docs/EXPANSION_PLAN.md).
