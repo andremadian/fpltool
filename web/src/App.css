@@ -1,0 +1,321 @@
+.app-loading {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ---------- Login ---------- */
+.login-screen {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 32px 20px;
+  flex: 1;
+  justify-content: center;
+}
+
+.login-screen form {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.login-screen input {
+  font-size: 16px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+}
+
+.login-screen button {
+  font-size: 16px;
+  padding: 10px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--accent);
+}
+
+/* ---------- Shell ---------- */
+.shell {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 100svh;
+}
+
+.shell-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+.app-name {
+  font-weight: 600;
+  color: var(--text-h);
+}
+
+.sign-out {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 14px;
+}
+
+.shell-main {
+  flex: 1;
+  padding: 12px 16px 24px;
+  overflow-y: auto;
+}
+
+.tab-bar {
+  display: flex;
+  border-top: 1px solid var(--border);
+  position: sticky;
+  bottom: 0;
+  background: var(--bg);
+}
+
+.tab-bar button {
+  flex: 1;
+  padding: 12px 4px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+}
+
+.tab-bar button.tab-active,
+.sub-tab-bar button.tab-active {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.sub-tab-bar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.sub-tab-bar button {
+  padding: 6px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: none;
+  color: var(--text);
+}
+
+/* ---------- Freshness badge ---------- */
+.freshness-container {
+  position: relative;
+}
+
+.freshness-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  border: none;
+  background: none;
+  color: var(--text);
+  padding: 4px;
+}
+
+.freshness-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.freshness-green {
+  color: #1d9e75;
+}
+
+.freshness-amber {
+  color: #d18b1b;
+}
+
+.freshness-panel {
+  position: absolute;
+  right: 0;
+  top: 100%;
+  z-index: 10;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 8px;
+  min-width: 220px;
+  box-shadow: var(--shadow);
+}
+
+.freshness-row {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+  padding: 4px 0;
+}
+
+/* ---------- Offline banner ---------- */
+.offline-banner {
+  background: #d18b1b;
+  color: #16171d;
+  text-align: center;
+  padding: 6px;
+  font-size: 13px;
+}
+
+/* ---------- Toasts ---------- */
+.toast-stack {
+  position: fixed;
+  bottom: 72px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  z-index: 100;
+  width: min(90vw, 420px);
+}
+
+.toast {
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.toast-error {
+  background: #b3261e;
+  color: #fff;
+}
+
+/* ---------- Cards / tabs ---------- */
+.tab-content {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+}
+
+.empty-state,
+.note {
+  color: var(--text);
+  font-size: 14px;
+}
+
+.countdown {
+  font-size: 28px;
+  font-weight: 600;
+  color: var(--text-h);
+  margin: 4px 0;
+}
+
+.deadline-local {
+  font-size: 13px;
+  color: var(--text);
+}
+
+.captain-list {
+  padding-left: 20px;
+  margin: 8px 0 0;
+  text-align: left;
+}
+
+.alert-row {
+  font-size: 14px;
+  padding: 4px 0;
+  border-top: 1px solid var(--border);
+  text-align: left;
+}
+
+/* ---------- Transfers / projections ---------- */
+.projection-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.projection-row {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  background: none;
+  color: var(--text-h);
+}
+
+.player-name {
+  font-weight: 600;
+}
+
+.score {
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.fixtures {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.player-detail {
+  padding: 10px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  margin-top: 4px;
+}
+
+.sparkline-row {
+  display: flex;
+  gap: 20px;
+  flex-wrap: wrap;
+}
+
+.sparkline-label {
+  display: block;
+  font-size: 11px;
+  color: var(--text);
+  margin-bottom: 2px;
+}
+
+.sparkline polyline {
+  stroke: var(--accent);
+}
+
+.season-stats {
+  display: grid;
+  grid-template-columns: auto auto;
+  gap: 2px 12px;
+  font-size: 13px;
+  margin: 10px 0 0;
+}
+
+.season-stats dt {
+  color: var(--text);
+}
+
+.season-stats dd {
+  margin: 0;
+  color: var(--text-h);
+  font-weight: 600;
+}
