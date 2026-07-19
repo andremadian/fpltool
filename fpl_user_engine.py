@@ -64,6 +64,7 @@ def get_supabase_client() -> Client:
 SCHEMA_CHECKS = [
     ("rival_team_snapshots", "season", "0005_season_rollover.sql"),
     ("pipeline_runs", "engine", "0007_player_daily_and_pipeline_runs.sql"),
+    ("league_rivals", "is_me", "0008_pwa_foundation.sql"),
 ]
 
 
@@ -234,8 +235,8 @@ def fetch_and_write_my_squads(
 
 
 def fetch_league_standings(league_id: int, my_team_id: int) -> list[dict[str, Any]]:
-    """Paginate the classic-league standings endpoint, returning rival rows only."""
-    rivals: list[dict[str, Any]] = []
+    """Paginate the classic-league standings endpoint. Includes my own row (is_me=True)."""
+    rows: list[dict[str, Any]] = []
     page = 1
     while True:
         response = requests.get(
@@ -248,9 +249,7 @@ def fetch_league_standings(league_id: int, my_team_id: int) -> list[dict[str, An
         results = standings.get("results", [])
 
         for entry in results:
-            if entry["entry"] == my_team_id:
-                continue
-            rivals.append({
+            rows.append({
                 "league_id": league_id,
                 "rival_fpl_team_id": entry["entry"],
                 "rival_name": entry.get("entry_name"),
@@ -258,6 +257,7 @@ def fetch_league_standings(league_id: int, my_team_id: int) -> list[dict[str, An
                 "total_points": entry.get("total"),
                 "league_rank": entry.get("rank"),
                 "last_rank": entry.get("last_rank"),
+                "is_me": entry["entry"] == my_team_id,
             })
 
         if not standings.get("has_next"):
@@ -265,43 +265,49 @@ def fetch_league_standings(league_id: int, my_team_id: int) -> list[dict[str, An
         page += 1
         time.sleep(random.uniform(*STANDINGS_PAGE_SLEEP_RANGE))
 
-    return rivals
+    return rows
 
 
 def write_league_standings(
     leagues: list[dict[str, Any]], supabase: Client,
 ) -> int:
-    """Fetch and upsert league_rivals for every tracked league. Returns total rows."""
+    """Fetch and upsert league_rivals (rivals + my own is_me row) per tracked league."""
     total_written = 0
     for league in leagues:
         league_id = league["league_id"]
         my_team_id = league["my_fpl_team_id"]
         try:
-            rivals = fetch_league_standings(league_id, my_team_id)
+            standings_rows = fetch_league_standings(league_id, my_team_id)
         except Exception as exc:
             logger.error("Failed to fetch standings for league %d: %s", league_id, exc)
             continue
 
-        if not rivals:
-            logger.warning("League %d returned 0 rivals (excluding self)", league_id)
+        if not standings_rows:
+            logger.warning("League %d returned 0 standings rows", league_id)
             continue
 
         # Replace, don't just upsert: rivals who left the league since the
         # last run would otherwise linger as stale standings rows forever.
         supabase.table("league_rivals").delete().eq("league_id", league_id).execute()
-        supabase.table("league_rivals").upsert(rivals).execute()
+        supabase.table("league_rivals").upsert(standings_rows).execute()
+        rival_count = sum(1 for r in standings_rows if not r["is_me"])
         logger.info(
-            "Upserted %d rivals for league %d (%s)",
-            len(rivals), league_id, league.get("league_name") or "unnamed",
+            "Upserted %d rivals + my standings row for league %d (%s)",
+            rival_count, league_id, league.get("league_name") or "unnamed",
         )
-        total_written += len(rivals)
+        total_written += len(standings_rows)
 
     return total_written
 
 
 def load_unique_rival_ids(supabase: Client) -> list[int]:
-    """Return deduplicated rival team IDs across all tracked leagues."""
-    response = supabase.table("league_rivals").select("rival_fpl_team_id").execute()
+    """Return deduplicated rival team IDs across all tracked leagues (excludes my own is_me row)."""
+    response = (
+        supabase.table("league_rivals")
+        .select("rival_fpl_team_id")
+        .eq("is_me", False)
+        .execute()
+    )
     rows = response.data or []
     return sorted({r["rival_fpl_team_id"] for r in rows})
 

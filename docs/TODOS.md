@@ -12,7 +12,7 @@
 
 Brief: [FPL_Sniper_Phase3B_PWA_Brief.md](../FPL_Sniper_Phase3B_PWA_Brief.md) (the [agent brief](../FPL_Sniper_Phase3B_ClaudeCode_Brief.md) is deferred — revive as a PWA chat tab only if fixed views prove insufficient). Four sessions, each ends with a commit:
 
-- [ ] **Session 1 — foundation & lockdown**: migration 0008 (RLS lockdown + `gameweeks` + 9 views), Supabase auth setup (invite email, disable signups, redirect URLs), `write_gameweeks` in `fpl_engine.py`. Done criteria 1–5. *Do this before any UI — it closes the anon-key write hole.*
+- [x] **Session 1 — foundation & lockdown** (2026-07-19): migration 0008 applied (RLS lockdown + `gameweeks` + `league_rivals.is_me` + `player_season_stats` + 8 curated-query views); Supabase auth configured (invited andremadian@gmail.com, sign-ups/anonymous disabled, OTP template includes `{{ .Token }}`, redirect allowlist has `localhost:5173` for dev); `write_gameweeks()` in `fpl_engine.py` + `is_me` handling in `fpl_user_engine.py`. Done criteria 1–5 all verified: both engines write clean post-lockdown, anon key gets permission-denied on read+write, UUID-impersonation SQL test confirms the owner-read policy, all 9 views queryable with `player_season_stats` G+A spot-checked against raw `player_history` sums.
 - [ ] **Session 2 — shell + This week + Transfers**: Vite scaffold in `web/`, magic-link login, tab shell + freshness badge, tabs 1–2 with empty states.
 - [ ] **Session 3 — Rivals + Chart maker**: tabs 3–4 (bubble chart: x/y/size metric pickers, my-squad highlight). Done criteria 6–7.
 - [ ] **Session 4 — PWA polish + deploy**: manifest/service worker (network-only for Supabase), install tests (iOS + Android), Vercel deploy, docs. Done criteria 8–11.

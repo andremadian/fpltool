@@ -70,6 +70,7 @@ SCHEMA_CHECKS = [
     ("players_master", "status", "0006_player_availability_fields.sql"),
     ("player_daily", "as_of_date", "0007_player_daily_and_pipeline_runs.sql"),
     ("pipeline_runs", "engine", "0007_player_daily_and_pipeline_runs.sql"),
+    ("gameweeks", "deadline_time", "0008_pwa_foundation.sql"),
 ]
 
 
@@ -288,6 +289,31 @@ def write_snapshot(data: dict[str, Any], supabase: Client) -> None:
     logger.info("Upserted %d players", len(players_rows))
 
 
+def write_gameweeks(data: dict[str, Any], season: str, supabase: Client) -> int:
+    """Upsert gameweek deadlines/status from bootstrap events — the This-week countdown source."""
+    events = data.get("events", [])
+    expected = ("finished", "is_current", "is_next")
+    if events:
+        missing = [f for f in expected if f not in events[0]]
+        if missing:
+            logger.warning("FPL API missing gameweek fields %s; storing defaults", missing)
+
+    rows = [
+        {
+            "season": season,
+            "gw": e["id"],
+            "deadline_time": e["deadline_time"],
+            "finished": e.get("finished", False),
+            "is_current": e.get("is_current", False),
+            "is_next": e.get("is_next", False),
+        }
+        for e in events
+    ]
+    supabase.table("gameweeks").upsert(rows).execute()
+    logger.info("Upserted %d gameweeks", len(rows))
+    return len(rows)
+
+
 def write_player_daily(data: dict[str, Any], season: str, supabase: Client) -> int:
     """Append today's per-player price/ownership/news row to player_daily."""
     raw = pd.DataFrame(data["elements"])
@@ -493,16 +519,18 @@ def main() -> None:
             )
         elif args.daily:
             write_snapshot(data, supabase)
+            gw_rows = write_gameweeks(data, season, supabase)
             rows_written = write_player_daily(data, season, supabase)
-            detail = f"snapshot refreshed + {rows_written} player_daily rows"
+            detail = f"snapshot refreshed + {rows_written} player_daily rows + {gw_rows} gameweeks"
         else:
             write_snapshot(data, supabase)
+            gw_rows = write_gameweeks(data, season, supabase)
             history_rows = fetch_player_history(data, season)
             write_history(history_rows, supabase)
             fixtures = fetch_fixtures(season)
             write_fixtures(fixtures, supabase)
             rows_written = len(history_rows) + len(fixtures)
-            detail = f"{len(history_rows)} history rows + {len(fixtures)} fixtures"
+            detail = f"{len(history_rows)} history rows + {len(fixtures)} fixtures + {gw_rows} gameweeks"
 
             # Final run of the season: preserve who each re-issuable ID referred to.
             if season_over:
