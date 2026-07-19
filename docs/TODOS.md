@@ -4,9 +4,9 @@
 
 ## Now (before GW1 2026/27, ~mid-August)
 
-- [ ] **Arm the dead-man switch** — create three checks at healthchecks.io (free), paste ping URLs into `.env` as `HEALTHCHECK_URL_WEEKLY` / `_DAILY` / `_USER` (grace: daily = 1 day, others weekly), then run `.venv/bin/python fpl_engine.py --daily` and confirm the check goes green. *The one remaining Phase 3A item; closes the silent-failure hole for good. Owner: Andre (needs account signup).*
-- [ ] **Set git identity** — `git config --global user.name / user.email`; optionally amend unpushed commits (`--reset-author`) before pushing.
-- [ ] **Push to GitHub** — local `main` is ahead of origin (expansion plan, Phase 3A, Phase 3B brief).
+- [x] **Arm the dead-man switch** — three checks created at healthchecks.io, ping URLs added to `.env`, confirmed `fpl-daily` goes green on `--daily` run (2026-07-19). Closes the last Phase 3A item.
+- [x] **Set git identity** — `git config --global user.name/email` set to `andremadian` / `andremadian@gmail.com` (2026-07-19).
+- [x] **Push to GitHub** — pushed local `main` (expansion plan, Phase 3A, Phase 3B brief) to origin (2026-07-19).
 
 ## Next (Phase 3B — personal edge PWA; AI agent deferred)
 
