@@ -104,6 +104,71 @@ export interface PlayersMasterAlertRow {
   form: number | null
 }
 
+export interface TrackedLeague {
+  league_id: number
+  league_name: string | null
+  my_fpl_team_id: number
+  notes: string | null
+  added_at: string
+}
+
+export interface LeagueRival {
+  league_id: number
+  rival_fpl_team_id: number
+  rival_name: string | null
+  rival_player_name: string | null
+  total_points: number | null
+  league_rank: number | null
+  last_rank: number | null
+  refreshed_at: string
+  is_me: boolean
+}
+
+export interface RivalCaptainConsensus {
+  season: string
+  gw: number
+  captain_player_name: string
+  captain_team: string
+  n_rivals_captaining: number
+  pct_of_rivals_captaining: number | null
+  captain_points_scored: number
+}
+
+export interface MySquadVsRival {
+  player_name: string
+  team_short_name: string
+  position: string
+  price: number
+  i_own: boolean
+  rivals_owning_count: number
+  total_rivals: number
+  rival_ownership_pct: number | null
+  total_points: number
+  form: number | null
+}
+
+export interface LeagueTemplateVsGlobal {
+  player_name: string
+  team_short_name: string
+  position: string
+  price: number
+  rival_ownership_pct: number | null
+  global_ownership_pct: number
+  template_delta: number | null
+  form: number | null
+  total_points: number
+}
+
+export interface RivalTransfer {
+  player_name: string
+  team_short_name: string
+  transfers_in_count: number
+  transfers_out_count: number
+  net_transfers: number
+  n_rivals_owning_now: number
+  pct_rival_ownership: number | null
+}
+
 export interface UserTeamSnapshot {
   season: string
   fpl_team_id: number

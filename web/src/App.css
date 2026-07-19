@@ -319,3 +319,198 @@
   color: var(--text-h);
   font-weight: 600;
 }
+
+/* ---------- Rivals ---------- */
+.league-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+}
+
+.league-selector select {
+  flex: 1;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+  font-size: 15px;
+}
+
+.scope-note {
+  margin: -4px 2px 0;
+}
+
+.standings-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+}
+
+.standings-list li {
+  display: grid;
+  grid-template-columns: 28px 1fr auto auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  font-size: 14px;
+}
+
+.standings-me {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.standings-rank {
+  color: var(--text);
+}
+
+.standings-points {
+  font-variant-numeric: tabular-nums;
+  color: var(--text-h);
+}
+
+.standings-gap {
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--text);
+  min-width: 48px;
+  text-align: right;
+}
+
+.rival-list {
+  list-style: none;
+  padding: 0;
+  margin: 8px 0 0;
+}
+
+.rival-list li {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 0;
+  border-top: 1px solid var(--border);
+  text-align: left;
+}
+
+.rival-meta {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.net-in {
+  color: #1d9e75;
+}
+
+.net-out {
+  color: #d18b1b;
+}
+
+/* ---------- Chart maker ---------- */
+.chart-controls {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.chart-controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.chart-controls select {
+  padding: 8px 10px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text-h);
+  font-size: 15px;
+}
+
+.slider-label,
+.toggle-label {
+  grid-column: 1 / -1;
+}
+
+.toggle-label {
+  flex-direction: row !important;
+  align-items: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-h);
+}
+
+.bubble-chart {
+  width: 100%;
+  height: auto;
+  margin-top: 4px;
+}
+
+.chart-axis {
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.chart-tick {
+  fill: var(--text);
+  font-size: 9px;
+}
+
+.chart-axis-title {
+  fill: var(--text-h);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.bubble {
+  stroke: var(--bg);
+  stroke-width: 2;
+  cursor: pointer;
+}
+
+.bubble-label {
+  fill: var(--text-h);
+  font-size: 9px;
+  pointer-events: none;
+}
+
+.chart-tooltip rect {
+  fill: var(--bg);
+  stroke: var(--border);
+  stroke-width: 1;
+}
+
+.tooltip-name {
+  fill: var(--text-h);
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.tooltip-val {
+  fill: var(--text);
+  font-size: 9px;
+}
+
+.chart-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+  font-size: 12px;
+  color: var(--text);
+  margin-top: 8px;
+}
+
+.legend-dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  margin-right: 4px;
+  vertical-align: middle;
+}

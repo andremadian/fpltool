@@ -4,8 +4,8 @@ import { FreshnessBadge } from './FreshnessBadge'
 import { OfflineBanner } from './OfflineBanner'
 import { ThisWeek } from '../tabs/ThisWeek'
 import { Transfers } from '../tabs/Transfers'
-import { RivalsStub } from '../tabs/RivalsStub'
-import { ChartsStub } from '../tabs/ChartsStub'
+import { Rivals } from '../tabs/Rivals'
+import { Charts } from '../tabs/Charts'
 
 const TABS = [
   { id: 'this-week', label: 'This week' },
@@ -34,8 +34,8 @@ export function Shell() {
       <main className="shell-main">
         {activeTab === 'this-week' && <ThisWeek />}
         {activeTab === 'transfers' && <Transfers />}
-        {activeTab === 'rivals' && <RivalsStub />}
-        {activeTab === 'charts' && <ChartsStub />}
+        {activeTab === 'rivals' && <Rivals />}
+        {activeTab === 'charts' && <Charts />}
       </main>
 
       <nav className="tab-bar">
