@@ -14,6 +14,7 @@ The engines fetch FPL data on a schedule and write it to Supabase Postgres; the 
 | 2. User + rivals ingestion | ✅ shipped | `fpl_user_engine.py` + 4 new tables + 4 analytics SQL queries |
 | 3A. Pre-season hardening | ✅ shipped (Jul 2026) | daily light run, `player_daily` + `pipeline_runs`, launchd, dead-man alerting, schema assert |
 | 3B. Personal edge PWA | ✅ shipped (Jul 2026) | [PWA brief](FPL_Sniper_Phase3B_PWA_Brief.md): `web/` React+Vite 4-tab installable app (This week / Transfers / Rivals / Chart maker), magic-link auth, migrations 0008 (RLS security lockdown + curated views + `gameweeks`) + 0009 (projection views). Reads Supabase via anon key. $0/month. |
+| 3C. Stats Explorer | ✅ shipped (Jul 2026) | 5th PWA tab: filterable/sortable players & teams tables (season + last-5), migration 0010 (4 explorer views). Reads Supabase via anon key. |
 | — AI chat agent | ⏸ deferred (Jul 2026) | [Agent brief](FPL_Sniper_Phase3B_ClaudeCode_Brief.md) kept for revival as a PWA chat tab if fixed views prove insufficient |
 | 4+. Sniper Brief, league surface | — | roadmap in [docs/EXPANSION_PLAN.md](docs/EXPANSION_PLAN.md) |
 
@@ -156,14 +157,15 @@ The repo lives in a Google-Drive-synced `~/Documents`. The plists originally red
         ├── 0006_player_availability_fields.sql  # status/news/transfer-momentum on players_master
         ├── 0007_player_daily_and_pipeline_runs.sql  # daily time series + run log
         ├── 0008_pwa_foundation.sql        # Phase 3B — RLS lockdown, curated views, gameweeks, is_me
-        └── 0009_projection_views_player_id.sql  # Phase 3B — projection views
+        ├── 0009_projection_views_player_id.sql  # Phase 3B — projection views
+        └── 0010_stats_explorer_views.sql   # Phase 3B/3C — player/team × season/last5 stats views
 ```
 
 (Plus `.venv/` — gitignored project venv the engines run through; `web/node_modules/` + `web/dist/` — gitignored; and `docs/` — phase-planning context for Claude Chat.)
 
 ## The PWA (`web/`)
 
-Phase 3B frontend: a React 19 + Vite + TypeScript installable PWA, $0/month, reads Supabase directly with the **anon key** (never the service role key) through RLS-locked curated views. Magic-link auth (`Login.tsx` → `useAuth.tsx`); the signed-in user is matched to their data via the `is_me` flag / `gameweeks` + curated views from migration 0008. Four tabs in `src/tabs/`: **This week**, **Transfers**, **Rivals** (war room), **Chart maker** (bubble chart). A `FreshnessBadge` reads `pipeline_runs` so the UI shows how stale the data is; `OfflineBanner` handles offline. Run locally with `cd web && npm run dev` (Vite on :5173, localhost-only — add `-- --host` for phone/PWA testing). The engines and the PWA are decoupled: the PWA only reads what the engines write, so **never** change ingestion to satisfy a UI need without updating the curated views (0008/0009) that sit between them.
+Phase 3B frontend: a React 19 + Vite + TypeScript installable PWA, $0/month, reads Supabase directly with the **anon key** (never the service role key) through RLS-locked curated views. Magic-link auth (`Login.tsx` → `useAuth.tsx`); the signed-in user is matched to their data via the `is_me` flag / `gameweeks` + curated views from migration 0008. Five tabs in `src/tabs/`: **This week**, **Transfers**, **Rivals** (war room), **Stats** (explorer — filterable/sortable player & team tables from the `*_explorer_*` views), **Chart maker** (bubble chart). A `FreshnessBadge` reads `pipeline_runs` so the UI shows how stale the data is; `OfflineBanner` handles offline. Run locally with `cd web && npm run dev` (Vite on :5173, localhost-only — add `-- --host` for phone/PWA testing). The engines and the PWA are decoupled: the PWA only reads what the engines write, so **never** change ingestion to satisfy a UI need without updating the curated views (0008/0009) that sit between them.
 
 ## Schema cheat sheet
 
@@ -180,6 +182,8 @@ Phase 3B frontend: a React 19 + Vite + TypeScript installable PWA, $0/month, rea
 - **`league_rivals`** — Phase 2. Mini-league standings, replaced (delete + insert) each run so leavers don't linger. PK `(league_id, rival_fpl_team_id)`.
 - **`rival_team_snapshots`** — Phase 2. Rivals' squads per GW. PK `(season, rival_fpl_team_id, gw)`. Same shape as `user_team_snapshots` minus personal-finance fields.
 - **user/conversation tables** — empty in Phases 1–2; Phase 3+. Note: Phase 2 deliberately uses its own tables instead of these because the existing scaffold FKs to `auth.users` and Phase 2 has no login.
+- **`player_explorer_season` / `player_explorer_last5`** — Phase 3C views. One row per player with the full metric set (goals/assists/xG/xA/xGI/xGC/CS/CBIT/BPS/ICT/points_per_90/points_per_million/…), season totals or last-5-GW form. Read by the Stats tab.
+- **`team_explorer_season` / `team_explorer_last5`** — Phase 3C views. One row per club: W/D/L, GF/GA/GD, points, clean sheets (from finished `fixtures`), xG/xA/xGC (from `team_history`), strength ratings.
 
 ## Migrations
 
@@ -192,6 +196,7 @@ Phase 3B frontend: a React 19 + Vite + TypeScript installable PWA, $0/month, rea
 - **0007** — Phase 3A. Creates `player_daily` + `pipeline_runs`. Both engines' startup schema assert requires 0006 + 0007 — they exit loudly naming the missing migration until it's applied.
 - **0008** — Phase 3B (PWA foundation). RLS security lockdown, `gameweeks` table, `is_me` matching, and the curated read-only views the PWA queries. This is what makes anon-key reads from the browser safe.
 - **0009** — Phase 3B. Projection views keyed on `player_id`. The PWA reads these; the engines don't.
+- **0010** — Phase 3C. Four `security_invoker` views (`player_explorer_season/last5`, `team_explorer_season/last5`) powering the Stats tab. Read-only, current-season-anchored; no engine changes. Apply via SQL Editor.
 
 ## Conventions
 

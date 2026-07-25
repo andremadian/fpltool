@@ -19,6 +19,10 @@ Brief: [FPL_Sniper_Phase3B_PWA_Brief.md](../FPL_Sniper_Phase3B_PWA_Brief.md) (th
 
 User-side prerequisites for 3B: a Vercel account (free Hobby tier), and the Supabase dashboard auth steps in the brief (invite your email, disable sign-ups). No API keys, no recurring cost.
 
+## Phase 3C — Stats Explorer (shipped 2026-07-25)
+
+- [x] **Stats Explorer tab** — 5th PWA tab. Migration 0010 adds four `security_invoker` views (`player_explorer_season/last5`, `team_explorer_season/last5`). Filterable (name search + position/team dropdowns + per-metric min/max ranges), sortable, season/last-5 toggle, sticky-name horizontal-scroll table, player-row expand (shared `PlayerDetail`). Spec: [superpowers/specs/2026-07-25-stats-explorer-design.md](superpowers/specs/2026-07-25-stats-explorer-design.md); plan: [superpowers/plans/2026-07-25-stats-explorer.md](superpowers/plans/2026-07-25-stats-explorer.md).
+
 ## Then (Phase 4 — the Sniper Brief)
 
 - [ ] **Write the Phase 4 brief** (after 3B session 3) — scheduled agent run (cron-shaped, reuses 3B's agent core + notifier), composes the Friday pre-deadline push: projected XI, captain ranking, transfers with rival-swing context, price/news alerts from `player_daily`, freshness footer. Saturday post-deadline recap optional. Off-season: monthly quiet-mode digest. `user_profile` learning starts here.
