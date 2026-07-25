@@ -187,3 +187,49 @@ export interface UserTeamSnapshot {
   team_value: number | null
   refreshed_at: string
 }
+
+export interface PlayerExplorerRow {
+  player_id: number
+  web_name: string
+  team: string
+  position: string
+  price: number
+  status: string | null
+  ownership: number | null
+  minutes: number
+  total_points: number
+  points_per_90: number | null
+  points_per_million: number | null
+  goals: number
+  assists: number
+  goal_involvements: number
+  xg: number | null
+  xa: number | null
+  xgi: number | null
+  xgc: number | null
+  clean_sheets: number
+  cbit: number
+  bps: number
+  ict_index: number | null
+  form: number | null
+}
+
+export interface TeamExplorerRow {
+  team_id: number
+  short_name: string
+  name: string
+  matches_played: number
+  wins: number
+  draws: number
+  losses: number
+  points: number
+  goals_for: number
+  goals_against: number
+  goal_difference: number
+  clean_sheets: number
+  total_xg: number | null
+  total_xa: number | null
+  xgc: number | null
+  strength_home: number | null
+  strength_away: number | null
+}
