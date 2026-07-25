@@ -122,6 +122,9 @@ Motivated by a real incident: the July 2026 system-Python wipe deleted `.venv/`,
 **12. launchd log paths must live outside `~/Documents` (Google Drive) — July 2026.**
 The repo lives in a Google-Drive-synced `~/Documents`. The plists originally redirected `StandardOut/ErrPath` to the in-repo `logs/cron.log`. When Google Drive dehydrated that file (it hadn't been written since the season ended) / TCC protection kicked in, **launchd could no longer open it and aborted the spawn with `EX_CONFIG (78)` before the engine ran at all** — so every scheduled run silently stopped executing (only `pipeline_runs` from earlier hydrated-file runs remained; the log froze). The tell: manual runs from an interactive shell worked (shell has Documents access + hydrates the file), launchd runs didn't; the engine has no `sys.exit(78)` — 78 came from launchd itself. Fix: all three plists now point `StandardOut/ErrPath` at `~/Library/Logs/fplsniper/cron.log` (local, non-Drive, non-TCC). This restored both logging **and** the schedule. Rule: never point a launchd redirect (or any file a background agent must open) inside `~/Documents`/`~/Desktop`/`~/Downloads`. The `.venv` is not Drive-synced, so the Python program itself still spawns fine.
 
+**13. Stats Explorer views anchor on the latest *finished-fixture* season and resolve identity from the archives (migration 0011, Phase 3C) — the season-rollover trap made real.**
+The 0010 explorer views hit decision #10 head-on at the first live rollover. Once the 2026/27 API opened, `fixtures` gained 380 unplayed 2026/27 rows and `players_master`/`teams` were overwritten with re-issued 2026/27 IDs, while `player_history`/`team_history` were still 2025/26. Result: team views anchored on `max(season) from fixtures` = 2026/27 → 0 finished games → all-zero metrics; player views summed 2025/26 history but joined it to the 2026/27 `players_master` by id → **every name mis-attributed** (Haaland's 27-goal season, old id 430, showed as whoever holds new id 430); `form`/`ownership`/`ict` were the 2026/27 pre-season snapshot (form 0 for ~740). Migration 0011 rewrites all four views to: (a) anchor on `max(season) from fixtures where finished = true` (2025/26 now, auto-advances to 2026/27 at GW1); (b) resolve player/team identity from `players_season_archive`/`teams_season_archive` when the anchor season is archived (completed), else from live `players_master`/`teams`; (c) sum every counting/expected stat from `player_history` for the anchor season (never from the live snapshot), recomputing team xG/xA/xGC through the archive player→team map rather than the `team_history` view (which is itself mis-keyed for a past season). Live-only fields (form/ownership/ict/status, team strength) are NULL → "—" for a completed season and populate automatically once the current season has played games. **Still latently mis-keyed for a past season (not yet fixed): `team_history` and `player_season_stats` views, and `player_daily` id lookups** — so the explorer's tap-to-expand sparklines (which read `player_daily`/`player_season_stats` by the archive id) show the wrong live player until 2026/27 GW1; Charts/Transfers read `player_season_stats` too. Fixing those is the same archive-resolver pattern, deferred.
+
 ## Files
 
 ```
@@ -158,7 +161,8 @@ The repo lives in a Google-Drive-synced `~/Documents`. The plists originally red
         ├── 0007_player_daily_and_pipeline_runs.sql  # daily time series + run log
         ├── 0008_pwa_foundation.sql        # Phase 3B — RLS lockdown, curated views, gameweeks, is_me
         ├── 0009_projection_views_player_id.sql  # Phase 3B — projection views
-        └── 0010_stats_explorer_views.sql   # Phase 3B/3C — player/team × season/last5 stats views
+        ├── 0010_stats_explorer_views.sql   # Phase 3C — player/team × season/last5 stats views
+        └── 0011_stats_explorer_season_fix.sql  # Phase 3C — anchor on finished-fixture season + archive identity
 ```
 
 (Plus `.venv/` — gitignored project venv the engines run through; `web/node_modules/` + `web/dist/` — gitignored; and `docs/` — phase-planning context for Claude Chat.)
@@ -196,7 +200,8 @@ Phase 3B frontend: a React 19 + Vite + TypeScript installable PWA, $0/month, rea
 - **0007** — Phase 3A. Creates `player_daily` + `pipeline_runs`. Both engines' startup schema assert requires 0006 + 0007 — they exit loudly naming the missing migration until it's applied.
 - **0008** — Phase 3B (PWA foundation). RLS security lockdown, `gameweeks` table, `is_me` matching, and the curated read-only views the PWA queries. This is what makes anon-key reads from the browser safe.
 - **0009** — Phase 3B. Projection views keyed on `player_id`. The PWA reads these; the engines don't.
-- **0010** — Phase 3C. Four `security_invoker` views (`player_explorer_season/last5`, `team_explorer_season/last5`) powering the Stats tab. Read-only, current-season-anchored; no engine changes. Apply via SQL Editor.
+- **0010** — Phase 3C. Four `security_invoker` views (`player_explorer_season/last5`, `team_explorer_season/last5`) powering the Stats tab. Read-only; no engine changes. Apply via SQL Editor. **Superseded by 0011** at the season boundary — apply 0011 too.
+- **0011** — Phase 3C. Rewrites the four explorer views to anchor on the latest *finished-fixture* season and resolve identity from the season archives (see decision #13). Fixes the all-zero team tab, mis-attributed names, and pre-season `form = 0` seen at the 2025/26→2026/27 rollover. Idempotent (`drop view if exists` + recreate). Apply via SQL Editor.
 
 ## Conventions
 
