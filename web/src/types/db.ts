@@ -74,7 +74,7 @@ export interface PlayerSeasonStats {
   team_id: number
   position: string
   price: number
-  ownership: number
+  ownership: number | null
   xg: number | null
   xa: number | null
   xgi: number | null
