@@ -4,16 +4,16 @@ Read this first when working in this project. Detailed setup is in [README.md](R
 
 ## What this project is
 
-**FPL Sniper** — a conversational-first Fantasy Premier League companion app, built in 5 phases. Phase 1 (this directory) is the **data ingestion pipeline** only. No frontend, no auth.
+**FPL Sniper** — a conversational-first Fantasy Premier League companion app, built in 5 phases. It now has two halves: the **data ingestion pipeline** (Python engines → Supabase, Phases 1–3A) and the **PWA frontend** (`web/`, a React 4-tab installable app, Phase 3B).
 
-The script fetches FPL data daily and writes it to Supabase Postgres. The user queries the data via Supabase Studio as a personal research tool while the conversational app is built in later phases.
+The engines fetch FPL data on a schedule and write it to Supabase Postgres; the PWA reads it back through anon-key + RLS-locked curated views behind magic-link auth. (Supabase Studio is still available as a raw-SQL research surface.)
 
 | Phase | Status | Scope |
 |-------|--------|-------|
 | 1. Global data ingestion | ✅ shipped | `fpl_engine.py` + Supabase schema |
 | 2. User + rivals ingestion | ✅ shipped | `fpl_user_engine.py` + 4 new tables + 4 analytics SQL queries |
 | 3A. Pre-season hardening | ✅ shipped (Jul 2026) | daily light run, `player_daily` + `pipeline_runs`, launchd, dead-man alerting, schema assert |
-| 3B. Personal edge PWA | 📝 briefed (Jul 2026), not built | [PWA brief](FPL_Sniper_Phase3B_PWA_Brief.md): 4-tab installable app (This week / Transfers / Rivals / Chart maker), magic-link auth, migration 0008 security lockdown + views + `gameweeks`. $0/month. 4 sessions. |
+| 3B. Personal edge PWA | ✅ shipped (Jul 2026) | [PWA brief](FPL_Sniper_Phase3B_PWA_Brief.md): `web/` React+Vite 4-tab installable app (This week / Transfers / Rivals / Chart maker), magic-link auth, migrations 0008 (RLS security lockdown + curated views + `gameweeks`) + 0009 (projection views). Reads Supabase via anon key. $0/month. |
 | — AI chat agent | ⏸ deferred (Jul 2026) | [Agent brief](FPL_Sniper_Phase3B_ClaudeCode_Brief.md) kept for revival as a PWA chat tab if fixed views prove insufficient |
 | 4+. Sniper Brief, league surface | — | roadmap in [docs/EXPANSION_PLAN.md](docs/EXPANSION_PLAN.md) |
 
@@ -135,8 +135,15 @@ The repo lives in a Google-Drive-synced `~/Documents`. The plists originally red
 ├── .env.example                           # env var template (shared)
 ├── .env                                   # local-only, gitignored
 ├── .gitignore
-├── logs/                                  # gitignored; both engines log here
+├── logs/                                  # gitignored; legacy in-repo log dir (launchd now logs to ~/Library/Logs/fplsniper/, see decision #12)
 ├── launchd/                               # LaunchAgent plists (scheduling)
+├── web/                                   # Phase 3B PWA — React + Vite + TS (see below)
+│   ├── src/tabs/                          # ThisWeek / Transfers / Rivals / Charts
+│   ├── src/components/                    # Login, Shell, FreshnessBadge, OfflineBanner, Sparkline, ToastContext
+│   ├── src/hooks/                         # useAuth, useSupabaseQuery
+│   ├── src/lib/                           # supabaseClient, season
+│   ├── .env.local                         # gitignored; VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
+│   └── package.json                       # npm run dev / build / preview
 ├── sql/
 │   └── queries/                           # curated analytics queries (Phase 1 + 2)
 └── supabase/
@@ -147,10 +154,16 @@ The repo lives in a Google-Drive-synced `~/Documents`. The plists originally red
         ├── 0004_phase2_user_and_rivals.sql  # user + rivals tables
         ├── 0005_season_rollover.sql       # season column + identity archives
         ├── 0006_player_availability_fields.sql  # status/news/transfer-momentum on players_master
-        └── 0007_player_daily_and_pipeline_runs.sql  # daily time series + run log
+        ├── 0007_player_daily_and_pipeline_runs.sql  # daily time series + run log
+        ├── 0008_pwa_foundation.sql        # Phase 3B — RLS lockdown, curated views, gameweeks, is_me
+        └── 0009_projection_views_player_id.sql  # Phase 3B — projection views
 ```
 
-(Plus `.venv/` — gitignored project venv that cron runs the engines through, and `docs/` — phase-planning context for Claude Chat.)
+(Plus `.venv/` — gitignored project venv the engines run through; `web/node_modules/` + `web/dist/` — gitignored; and `docs/` — phase-planning context for Claude Chat.)
+
+## The PWA (`web/`)
+
+Phase 3B frontend: a React 19 + Vite + TypeScript installable PWA, $0/month, reads Supabase directly with the **anon key** (never the service role key) through RLS-locked curated views. Magic-link auth (`Login.tsx` → `useAuth.tsx`); the signed-in user is matched to their data via the `is_me` flag / `gameweeks` + curated views from migration 0008. Four tabs in `src/tabs/`: **This week**, **Transfers**, **Rivals** (war room), **Chart maker** (bubble chart). A `FreshnessBadge` reads `pipeline_runs` so the UI shows how stale the data is; `OfflineBanner` handles offline. Run locally with `cd web && npm run dev` (Vite on :5173, localhost-only — add `-- --host` for phone/PWA testing). The engines and the PWA are decoupled: the PWA only reads what the engines write, so **never** change ingestion to satisfy a UI need without updating the curated views (0008/0009) that sit between them.
 
 ## Schema cheat sheet
 
@@ -177,6 +190,8 @@ The repo lives in a Google-Drive-synced `~/Documents`. The plists originally red
 - **0005** — season rollover. Adds `season` to the four time-series tables (backfilled as `'2025/26'`), rebuilds their PKs, recreates `team_history` with season, and creates + seeds `players_season_archive`/`teams_season_archive`. **Must be applied before the first 2026/27 engine run** — the engines write a `season` column from this migration onward and fail against an un-migrated database.
 - **0006** — Phase 3A. Adds availability + transfer-momentum columns to `players_master`. Idempotent (`add column if not exists`).
 - **0007** — Phase 3A. Creates `player_daily` + `pipeline_runs`. Both engines' startup schema assert requires 0006 + 0007 — they exit loudly naming the missing migration until it's applied.
+- **0008** — Phase 3B (PWA foundation). RLS security lockdown, `gameweeks` table, `is_me` matching, and the curated read-only views the PWA queries. This is what makes anon-key reads from the browser safe.
+- **0009** — Phase 3B. Projection views keyed on `player_id`. The PWA reads these; the engines don't.
 
 ## Conventions
 
@@ -191,6 +206,7 @@ The repo lives in a Google-Drive-synced `~/Documents`. The plists originally red
 
 - For Phase 1 changes: stay focused on the global ingestion pipeline (`fpl_engine.py` and the data tables it writes). Don't pre-emptively touch the user/conversation tables — those are Phase 3+ scope.
 - For Phase 2 changes: stay in `fpl_user_engine.py` and the four Phase 2 tables. Do not modify `fpl_engine.py` or Phase 1 tables — the two engines are intentionally separate.
+- For PWA (Phase 3B) changes: stay in `web/`. The frontend reads Supabase via the **anon key** through the RLS-locked curated views from migrations 0008/0009 — never wire it to the service-role key, and if it needs a new shape of data, add/adjust a curated view in a new migration rather than loosening RLS or having the browser hit base tables. Don't change the engines to satisfy a UI need without going through the views.
 - For new phases: ask the user for the next brief before starting. Each phase has its own brief.
 - For schema changes: never modify a migration file after it's been applied. Create a new migration file (next sequential number) and add it.
 - For deployment changes: scheduling is launchd (`launchd/` plists in the repo, installed to `~/Library/LaunchAgents/`, labels `com.fplsniper.*`). Edit the repo copy, re-copy, and `launchctl bootout` + `bootstrap`. The crontab no longer has FPL entries — don't touch what's there (Transfez Market Monitoring).
