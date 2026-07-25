@@ -676,16 +676,3 @@
   z-index: 2;
   background: var(--code-bg);
 }
-
-.stats-table .clickable-row {
-  cursor: pointer;
-}
-
-.stats-table .clickable-row:hover .sticky-col {
-  background: var(--accent-bg);
-}
-
-.stats-table .detail-row td {
-  background: var(--social-bg);
-  white-space: normal;
-}

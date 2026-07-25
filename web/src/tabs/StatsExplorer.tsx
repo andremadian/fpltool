@@ -1,7 +1,6 @@
-import { Fragment, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { supabase } from '../lib/supabaseClient'
 import { useSupabaseQuery } from '../hooks/useSupabaseQuery'
-import { PlayerDetail } from '../components/PlayerDetail'
 import {
   PLAYER_COLUMNS,
   TEAM_COLUMNS,
@@ -64,7 +63,6 @@ export function StatsExplorer() {
   const [ranges, setRanges] = useState<Record<string, RangeInput>>({})
   const [sort, setSort] = useState<SortState>({ key: DEFAULT_SORT.player, dir: 'desc' })
   const [filtersOpen, setFiltersOpen] = useState(false)
-  const [expandedId, setExpandedId] = useState<number | null>(null)
 
   const view = viewName(entity, timeWindow)
   const state = useSupabaseQuery<PlayerExplorerRow | TeamExplorerRow>(
@@ -138,7 +136,6 @@ export function StatsExplorer() {
     setRanges({})
     setPosition('All')
     setTeam('All')
-    setExpandedId(null)
   }
 
   function toggleSort(col: ColumnDef) {
@@ -299,36 +296,18 @@ export function StatsExplorer() {
                 </tr>
               </thead>
               <tbody>
-                {visible.map((r) => {
-                  const id = rowId(entity, r)
-                  const isExpanded = entity === 'player' && expandedId === id
-                  return (
-                    <Fragment key={id}>
-                      <tr
-                        className={entity === 'player' ? 'clickable-row' : ''}
-                        onClick={() => {
-                          if (entity === 'player') setExpandedId(isExpanded ? null : id)
-                        }}
+                {visible.map((r) => (
+                  <tr key={rowId(entity, r)}>
+                    {columns.map((c, i) => (
+                      <td
+                        key={c.key}
+                        className={`${i === 0 ? 'sticky-col' : ''} ${c.numeric ? 'num' : ''}`}
                       >
-                        {columns.map((c, i) => (
-                          <td
-                            key={c.key}
-                            className={`${i === 0 ? 'sticky-col' : ''} ${c.numeric ? 'num' : ''}`}
-                          >
-                            {formatCell(r[c.key], c)}
-                          </td>
-                        ))}
-                      </tr>
-                      {isExpanded && (
-                        <tr className="detail-row">
-                          <td colSpan={columns.length}>
-                            <PlayerDetail playerId={id} />
-                          </td>
-                        </tr>
-                      )}
-                    </Fragment>
-                  )
-                })}
+                        {formatCell(r[c.key], c)}
+                      </td>
+                    ))}
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>
