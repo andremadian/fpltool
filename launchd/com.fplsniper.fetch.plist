@@ -12,9 +12,9 @@
 	<key>WorkingDirectory</key>
 	<string>/Users/andremadian/Documents/1. PROJECTS/PERSONAL AGENTIC AI/FPL Tool</string>
 	<key>StandardOutPath</key>
-	<string>/Users/andremadian/Documents/1. PROJECTS/PERSONAL AGENTIC AI/FPL Tool/logs/cron.log</string>
+	<string>/Users/andremadian/Library/Logs/fplsniper/cron.log</string>
 	<key>StandardErrorPath</key>
-	<string>/Users/andremadian/Documents/1. PROJECTS/PERSONAL AGENTIC AI/FPL Tool/logs/cron.log</string>
+	<string>/Users/andremadian/Library/Logs/fplsniper/cron.log</string>
 	<key>StartCalendarInterval</key>
 	<dict>
 		<key>Weekday</key>

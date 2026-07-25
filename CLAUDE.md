@@ -75,8 +75,8 @@ Always run the engines via `.venv/bin/python` — the system Python has been wip
 - **`com.fplsniper.daily`:** every day 9am WIB — `fpl_engine.py --daily` (captures post-price-change state; FPL price changes land ~7:30am WIB)
 - **`com.fplsniper.fetch`:** Friday 5pm WIB — `fpl_engine.py` (weekly full run)
 - **`com.fplsniper.user`:** Friday 5:30pm + Saturday 10am WIB — `fpl_user_engine.py`
-- **Logs:** `logs/cron.log` (gitignored via `*.log`) — both engines log to the same file
-- **View:** `launchctl list | grep fplsniper` for agents, `tail logs/cron.log` for runs, or query `pipeline_runs` in Supabase (one row per run, any outcome)
+- **Logs:** `~/Library/Logs/fplsniper/cron.log` — both engines log to the same file. **Must live outside the repo:** this project sits in a Google-Drive-synced `~/Documents`, and launchd's spawn fails with `EX_CONFIG (78)` when it tries to open a `StandardOut/ErrPath` redirect file there (Drive dehydrates/TCC-protects it) — which silently killed *every* scheduled run, not just logging (fixed July 2026, see decision #12). Keep all launchd `StandardOut/ErrPath` values pointed at `~/Library/Logs/`, never `~/Documents`.
+- **View:** `launchctl list | grep fplsniper` for agents, `tail ~/Library/Logs/fplsniper/cron.log` for runs, or query `pipeline_runs` in Supabase (one row per run, any outcome)
 - **Alerting:** healthchecks.io dead-man switch — engines ping `HEALTHCHECK_URL_*` from `.env` on every run; a missing ping triggers an email. This (not launchd) is what catches a shut-down Mac or a wiped venv.
 - **After editing a plist:** re-copy to `~/Library/LaunchAgents/` and `launchctl bootout` + `bootstrap` it (commands in README).
 - **Pre-deadline rival picks:** the Friday 5:30pm run usually fires before the GW deadline, so rival picks return 404 or stale. The Saturday 10am run is the canonical capture; Friday is a safety net.
@@ -117,6 +117,9 @@ FPL re-issues player IDs, team IDs (1–20) and fixture IDs every season. Migrat
 
 **11. Phase 3A hardening: instrumented runs + launchd + daily light mode (July 2026).**
 Motivated by a real incident: the July 2026 system-Python wipe deleted `.venv/`, and four scheduled cron runs failed/vanished with zero alerting (harmless only because the season had ended). Both engines now (a) assert the expected schema at startup and exit loudly naming the missing migration, (b) insert a row into `pipeline_runs` for every run including early exits, and (c) ping healthchecks.io if `HEALTHCHECK_URL_*` is set — absence of a ping is the alert. Scheduling moved from cron to launchd (`launchd/` plists) because launchd fires missed jobs on wake. The daily `--daily` mode exists because price changes and injury news move daily but the old cadence only looked on Fridays. `pipeline_runs` is also what Phase 3B's agent freshness check will read.
+
+**12. launchd log paths must live outside `~/Documents` (Google Drive) — July 2026.**
+The repo lives in a Google-Drive-synced `~/Documents`. The plists originally redirected `StandardOut/ErrPath` to the in-repo `logs/cron.log`. When Google Drive dehydrated that file (it hadn't been written since the season ended) / TCC protection kicked in, **launchd could no longer open it and aborted the spawn with `EX_CONFIG (78)` before the engine ran at all** — so every scheduled run silently stopped executing (only `pipeline_runs` from earlier hydrated-file runs remained; the log froze). The tell: manual runs from an interactive shell worked (shell has Documents access + hydrates the file), launchd runs didn't; the engine has no `sys.exit(78)` — 78 came from launchd itself. Fix: all three plists now point `StandardOut/ErrPath` at `~/Library/Logs/fplsniper/cron.log` (local, non-Drive, non-TCC). This restored both logging **and** the schedule. Rule: never point a launchd redirect (or any file a background agent must open) inside `~/Documents`/`~/Desktop`/`~/Downloads`. The `.venv` is not Drive-synced, so the Python program itself still spawns fine.
 
 ## Files
 

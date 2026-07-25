@@ -108,7 +108,7 @@ done
 launchctl list | grep fplsniper   # all three should appear
 ```
 
-Both engines append to `logs/cron.log` (gitignored). To trigger a run manually: `launchctl kickstart gui/$(id -u)/com.fplsniper.daily`. To roll back to cron: `launchctl bootout` the three agents and re-add the crontab lines from git history.
+Both engines append to `~/Library/Logs/fplsniper/cron.log` (outside the repo — see below). To trigger a run manually: `launchctl kickstart gui/$(id -u)/com.fplsniper.daily`. To roll back to cron: `launchctl bootout` the three agents and re-add the crontab lines from git history.
 
 **Limits, honestly:** launchd catches sleep, not shutdown, and a scheduling fix can't catch a broken runtime (the July 2026 venv wipe). Detection is the healthchecks.io dead-man switch (see env vars above) plus the schema assert both engines run at startup — an un-migrated database or dead venv now fails loudly with instructions instead of silently.
 
