@@ -68,7 +68,9 @@ export function StatsExplorer() {
 
   const view = viewName(entity, timeWindow)
   const state = useSupabaseQuery<PlayerExplorerRow | TeamExplorerRow>(
-    () => supabase.from(view).select('*'),
+    // .limit(2000) lifts PostgREST's default 1000-row cap so the ~840-player
+    // season view is never silently truncated (teams are only 20 rows).
+    () => supabase.from(view).select('*').limit(2000),
     [view],
   )
 
