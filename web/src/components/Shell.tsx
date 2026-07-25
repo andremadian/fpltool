@@ -6,11 +6,13 @@ import { ThisWeek } from '../tabs/ThisWeek'
 import { Transfers } from '../tabs/Transfers'
 import { Rivals } from '../tabs/Rivals'
 import { Charts } from '../tabs/Charts'
+import { StatsExplorer } from '../tabs/StatsExplorer'
 
 const TABS = [
   { id: 'this-week', label: 'This week' },
   { id: 'transfers', label: 'Transfers' },
   { id: 'rivals', label: 'Rivals' },
+  { id: 'stats', label: 'Stats' },
   { id: 'charts', label: 'Charts' },
 ] as const
 
@@ -35,6 +37,7 @@ export function Shell() {
         {activeTab === 'this-week' && <ThisWeek />}
         {activeTab === 'transfers' && <Transfers />}
         {activeTab === 'rivals' && <Rivals />}
+        {activeTab === 'stats' && <StatsExplorer />}
         {activeTab === 'charts' && <Charts />}
       </main>
 
