@@ -30,8 +30,8 @@ const DEFAULT_SORT: Record<Entity, string> = {
   team: 'points',
 }
 
-function viewName(entity: Entity, window: StatsWindow): string {
-  return `${entity}_explorer_${window}`
+function viewName(entity: Entity, win: StatsWindow): string {
+  return `${entity}_explorer_${win}`
 }
 
 function nameKey(entity: Entity): string {
@@ -80,6 +80,8 @@ export function StatsExplorer() {
     [entity, timeWindow],
   )
 
+  // Deliberate erasure to a dynamic record so cells can be read by column key;
+  // the PlayerExplorerRow/TeamExplorerRow types document the view contract.
   const rows = useMemo(
     () => (state.status === 'data' ? (state.data as unknown as Row[]) : []),
     [state],
@@ -96,6 +98,7 @@ export function StatsExplorer() {
   }, [rows, entity])
 
   const visible = useMemo(() => {
+    const activeRangeKeys = new Set(columns.filter((c) => c.numeric).map((c) => c.key))
     const nk = nameKey(entity)
     const tk = teamKey(entity)
     const q = search.trim().toLowerCase()
@@ -104,6 +107,7 @@ export function StatsExplorer() {
       if (entity === 'player' && position !== 'All' && r.position !== position) return false
       if (team !== 'All' && r[tk] !== team) return false
       for (const [key, range] of Object.entries(ranges)) {
+        if (!activeRangeKeys.has(key)) continue
         const val = r[key]
         if (typeof val !== 'number') {
           if (range.min !== '' || range.max !== '') return false
@@ -124,7 +128,7 @@ export function StatsExplorer() {
       if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * mul
       return String(av).localeCompare(String(bv)) * mul
     })
-  }, [rows, entity, search, position, team, ranges, sort])
+  }, [rows, entity, search, position, team, ranges, sort, columns])
 
   function switchEntity(next: Entity) {
     setEntity(next)
@@ -226,16 +230,18 @@ export function StatsExplorer() {
               </select>
             </label>
           )}
-          <label className="filter-select">
-            Team
-            <select value={team} onChange={(e) => setTeam(e.target.value)}>
-              {teamOptions.map((t) => (
-                <option key={t} value={t}>
-                  {t}
-                </option>
-              ))}
-            </select>
-          </label>
+          {entity === 'player' && (
+            <label className="filter-select">
+              Team
+              <select value={team} onChange={(e) => setTeam(e.target.value)}>
+                {teamOptions.map((t) => (
+                  <option key={t} value={t}>
+                    {t}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
           <div className="range-grid">
             {columns
               .filter((c) => c.numeric)
