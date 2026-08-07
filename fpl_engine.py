@@ -71,6 +71,7 @@ SCHEMA_CHECKS = [
     ("player_daily", "as_of_date", "0007_player_daily_and_pipeline_runs.sql"),
     ("pipeline_runs", "engine", "0007_player_daily_and_pipeline_runs.sql"),
     ("gameweeks", "deadline_time", "0008_pwa_foundation.sql"),
+    ("players_master", "last_seen_season", "0013_players_master_season_stamp.sql"),
 ]
 
 
@@ -236,8 +237,15 @@ def _availability_fields(raw: pd.DataFrame) -> dict[str, Any]:
     }
 
 
-def write_snapshot(data: dict[str, Any], supabase: Client) -> None:
-    """Clean teams + players from bootstrap and upsert into snapshot tables."""
+def write_snapshot(data: dict[str, Any], season: str, supabase: Client) -> None:
+    """Clean teams + players from bootstrap and upsert into snapshot tables.
+
+    Every player row is stamped with `season` so a later season can tell its
+    own players apart from re-issued IDs left behind by an earlier one. The
+    upsert never deletes (player_history holds an FK onto players_master), so
+    without the stamp the snapshot silently accumulates past seasons — see
+    migration 0013.
+    """
     teams_df = pd.DataFrame(data["teams"])[[
         "id", "name", "short_name", "strength_overall_home", "strength_overall_away",
     ]]
@@ -281,6 +289,7 @@ def write_snapshot(data: dict[str, Any], supabase: Client) -> None:
         "ict_index": pd.to_numeric(raw["ict_index"], errors="coerce"),
         "form": pd.to_numeric(raw["form"], errors="coerce"),
         "minutes": minutes,
+        "last_seen_season": season,
         **_availability_fields(raw),
     })
 
@@ -518,12 +527,12 @@ def main() -> None:
                 "until the new season's API goes live. Exiting.", season,
             )
         elif args.daily:
-            write_snapshot(data, supabase)
+            write_snapshot(data, season, supabase)
             gw_rows = write_gameweeks(data, season, supabase)
             rows_written = write_player_daily(data, season, supabase)
             detail = f"snapshot refreshed + {rows_written} player_daily rows + {gw_rows} gameweeks"
         else:
-            write_snapshot(data, supabase)
+            write_snapshot(data, season, supabase)
             gw_rows = write_gameweeks(data, season, supabase)
             history_rows = fetch_player_history(data, season)
             write_history(history_rows, supabase)
