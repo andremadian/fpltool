@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.fplsniper.heartbeat</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/andremadian/Documents/1. PROJECTS/PERSONAL AGENTIC AI/FPL Tool/.venv/bin/python</string>
+		<string>health_check.py</string>
+		<string>--notify</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/andremadian/Documents/1. PROJECTS/PERSONAL AGENTIC AI/FPL Tool</string>
+	<key>StandardOutPath</key>
+	<string>/Users/andremadian/Library/Logs/fplsniper/cron.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/andremadian/Library/Logs/fplsniper/cron.log</string>
+	<!-- Thursday 8pm WIB — the evening before a typical Friday-morning
+	     gameweek deadline, leaving time to fix a broken pipeline before it
+	     matters. Weekday 4 = Thursday. -->
+	<key>StartCalendarInterval</key>
+	<dict>
+		<key>Weekday</key>
+		<integer>4</integer>
+		<key>Hour</key>
+		<integer>20</integer>
+		<key>Minute</key>
+		<integer>0</integer>
+	</dict>
+</dict>
+</plist>

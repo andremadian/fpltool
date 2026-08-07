@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.fplsniper.web</string>
+	<!-- Absolute paths: launchd does not read your shell profile, so `npm`
+	     would not otherwise be on PATH. -->
+	<key>ProgramArguments</key>
+	<array>
+		<string>/usr/local/bin/npm</string>
+		<string>run</string>
+		<string>dev</string>
+		<string>--</string>
+		<!-- strictPort so the bookmark never silently moves to 5174. -->
+		<string>--port</string>
+		<string>5173</string>
+		<string>--strictPort</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/Users/andremadian/Documents/1. PROJECTS/PERSONAL AGENTIC AI/FPL Tool/web</string>
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>PATH</key>
+		<string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+	</dict>
+	<!-- Start at login and keep it up: restart if Vite crashes or is killed. -->
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<!-- Own log file — the engines' cron.log stays readable that way. Must
+	     live outside ~/Documents (Google Drive), see decision #12. -->
+	<key>StandardOutPath</key>
+	<string>/Users/andremadian/Library/Logs/fplsniper/web.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/andremadian/Library/Logs/fplsniper/web.log</string>
+</dict>
+</plist>
