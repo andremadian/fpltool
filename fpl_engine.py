@@ -32,6 +32,7 @@ from typing import Any
 import pandas as pd
 import requests
 from dotenv import load_dotenv
+from postgrest.exceptions import APIError
 from supabase import Client, create_client
 
 load_dotenv()
@@ -63,6 +64,17 @@ def get_supabase_client() -> Client:
     return create_client(url, key)
 
 
+# launchd fires a missed job the moment the Mac wakes, which is routinely before
+# WiFi has reassociated. A dropped connection there used to surface as a bogus
+# "apply migration X" error and silently cost the run (an Aug 2026 blip lost a
+# whole gameweek's rival capture) — so poll before concluding anything is wrong.
+NETWORK_PROBE_ATTEMPTS = 6
+NETWORK_PROBE_BACKOFF_SECONDS = 15
+
+# The only Postgres SQLSTATEs that genuinely mean "the migration isn't applied":
+# undefined_column and undefined_table. Anything else is a transport problem.
+MISSING_SCHEMA_SQLSTATES = frozenset({"42703", "42P01"})
+
 # (table, column, migration that provides it) — checked at startup so an
 # un-migrated database fails loudly with instructions instead of mid-run.
 SCHEMA_CHECKS = [
@@ -75,12 +87,56 @@ SCHEMA_CHECKS = [
 ]
 
 
+def is_missing_schema(exc: Exception) -> bool:
+    """True when Supabase answered and told us a column or table doesn't exist."""
+    return isinstance(exc, APIError) and exc.code in MISSING_SCHEMA_SQLSTATES
+
+
+def wait_for_supabase(supabase: Client) -> None:
+    """Poll Supabase until it answers, so a just-woken Mac isn't a failed run."""
+    for attempt in range(1, NETWORK_PROBE_ATTEMPTS + 1):
+        try:
+            supabase.table("pipeline_runs").select("engine").limit(1).execute()
+            if attempt > 1:
+                logger.info(
+                    "Supabase reachable after %s attempts — network was waking up",
+                    attempt,
+                )
+            return
+        except Exception as exc:
+            if is_missing_schema(exc):
+                # The server answered, it just lacks the column. Return and let
+                # assert_schema name the migration instead of blaming the network.
+                return
+            if attempt == NETWORK_PROBE_ATTEMPTS:
+                raise RuntimeError(
+                    f"Supabase unreachable after {attempt} attempts over "
+                    f"{(attempt - 1) * NETWORK_PROBE_BACKOFF_SECONDS}s — this is a "
+                    f"network or Supabase outage, not a missing migration. ({exc})"
+                ) from exc
+            logger.info(
+                "Supabase not reachable yet (attempt %s/%s), retrying in %ss…",
+                attempt,
+                NETWORK_PROBE_ATTEMPTS,
+                NETWORK_PROBE_BACKOFF_SECONDS,
+            )
+            time.sleep(NETWORK_PROBE_BACKOFF_SECONDS)
+
+
 def assert_schema(supabase: Client) -> None:
     """Fail loudly at startup if an expected migration hasn't been applied."""
     for table, column, migration in SCHEMA_CHECKS:
         try:
             supabase.table(table).select(column).limit(1).execute()
         except Exception as exc:
+            if not is_missing_schema(exc):
+                # A dropped connection mid-check is not a migration problem.
+                # Saying so stops the next reader chasing an applied migration.
+                raise RuntimeError(
+                    f"Could not verify {table}.{column} — the Supabase call itself "
+                    f"failed ({exc}). This is a connection problem, not a missing "
+                    f"migration; re-run once the network is stable."
+                ) from exc
             raise RuntimeError(
                 f"Schema check failed on {table}.{column} — apply "
                 f"supabase/migrations/{migration} in the Supabase SQL Editor, "
@@ -512,6 +568,7 @@ def main() -> None:
     season: str | None = None
     gw: int | None = None
     try:
+        wait_for_supabase(supabase)
         assert_schema(supabase)
         data = fetch_bootstrap()
         season = determine_season(data)
