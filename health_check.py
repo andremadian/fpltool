@@ -28,6 +28,7 @@ The report itself always prints.
 import argparse
 import logging
 import os
+import time
 from datetime import date, datetime, timedelta, timezone
 
 import requests
@@ -59,6 +60,14 @@ TELEGRAM_API = "https://api.telegram.org/bot{token}/sendMessage"
 TELEGRAM_TIMEOUT_SECONDS = 20
 # Telegram rejects messages over 4096 characters.
 TELEGRAM_MAX_CHARS = 4000
+TELEGRAM_SEND_ATTEMPTS = 3
+
+# launchd fires a missed job the moment the Mac wakes, which is routinely
+# before WiFi has reassociated — the first run of this script died on a
+# ReadTimeout against Supabase for exactly that reason. Poll until the
+# network answers rather than reporting a phantom outage.
+NETWORK_PROBE_ATTEMPTS = 6
+NETWORK_PROBE_BACKOFF_SECONDS = 15
 
 
 class Report:
@@ -98,6 +107,43 @@ def get_supabase_client() -> Client:
     if not url or not key:
         raise RuntimeError("SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY must be set in .env")
     return create_client(url, key)
+
+
+def wait_for_supabase(supabase: Client, report: Report) -> bool:
+    """Poll Supabase until it answers, so a just-woken Mac isn't called an outage."""
+    for attempt in range(1, NETWORK_PROBE_ATTEMPTS + 1):
+        try:
+            supabase.table("pipeline_runs").select("engine").limit(1).execute()
+            if attempt > 1:
+                report.line("(Supabase reachable after %s attempts — network was waking up)", attempt)
+            return True
+        except Exception as exc:
+            if attempt == NETWORK_PROBE_ATTEMPTS:
+                report.warn(
+                    f"Supabase unreachable after {attempt} attempts over "
+                    f"{(attempt - 1) * NETWORK_PROBE_BACKOFF_SECONDS}s — "
+                    f"no checks could run ({str(exc)[:120]})"
+                )
+                return False
+            logger.info("Supabase not reachable yet (attempt %s), retrying…", attempt)
+            time.sleep(NETWORK_PROBE_BACKOFF_SECONDS)
+    return False
+
+
+def run_check(check, supabase: Client, report: Report) -> None:
+    """Run one check section, turning a crash into a warning instead of a dead run.
+
+    The whole point of a heartbeat is to speak up when things are broken, so
+    no single failing query may take the report — and the notification with
+    it — down. The first scheduled run died exactly this way.
+    """
+    try:
+        check(supabase, report)
+    except Exception as exc:
+        name = check.__name__.replace("report_", "").replace("_", " ")
+        logger.exception("check '%s' failed", name)
+        report.line("  (%s check failed: %s)", name, str(exc)[:150])
+        report.warn(f"the '{name}' check itself failed: {str(exc)[:150]}")
 
 
 def report_season_state(supabase: Client, report: Report) -> None:
@@ -321,19 +367,26 @@ def send_telegram(report: Report) -> bool:
     if len(text) > TELEGRAM_MAX_CHARS:
         text = text[:TELEGRAM_MAX_CHARS] + "\n… (truncated)"
 
-    try:
-        response = requests.post(
-            TELEGRAM_API.format(token=token),
-            json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
-            timeout=TELEGRAM_TIMEOUT_SECONDS,
-        )
-        response.raise_for_status()
-    except Exception as exc:
-        logger.error("Telegram send failed: %s", exc)
-        return False
-
-    logger.info("Report sent to Telegram chat %s", chat_id)
-    return True
+    # Same wake-up race as the Supabase probe: the send is the one step that
+    # must not be lost, so retry it rather than failing on a cold network.
+    for attempt in range(1, TELEGRAM_SEND_ATTEMPTS + 1):
+        try:
+            response = requests.post(
+                TELEGRAM_API.format(token=token),
+                json={"chat_id": chat_id, "text": text, "disable_web_page_preview": True},
+                timeout=TELEGRAM_TIMEOUT_SECONDS,
+            )
+            response.raise_for_status()
+        except Exception as exc:
+            if attempt == TELEGRAM_SEND_ATTEMPTS:
+                logger.error("Telegram send failed after %s attempts: %s", attempt, exc)
+                return False
+            logger.info("Telegram send attempt %s failed (%s), retrying…", attempt, exc)
+            time.sleep(NETWORK_PROBE_BACKOFF_SECONDS)
+            continue
+        logger.info("Report sent to Telegram chat %s", chat_id)
+        return True
+    return False
 
 
 def main() -> None:
@@ -347,15 +400,24 @@ def main() -> None:
     args = parser.parse_args()
 
     report = Report()
-    supabase = get_supabase_client()
-
     report.line("FPL Sniper health check — %s", datetime.now().strftime("%Y-%m-%d %H:%M"))
     report.line("")
 
-    report_season_state(supabase, report)
-    report_engine_runs(supabase, report)
-    report_data_freshness(supabase, report)
-    report_config(supabase, report)
+    try:
+        supabase = get_supabase_client()
+    except Exception as exc:
+        # No client means no checks at all — still worth telling someone.
+        report.warn(f"could not build the Supabase client: {exc}")
+        supabase = None
+
+    if supabase is not None and wait_for_supabase(supabase, report):
+        for check in (
+            report_season_state,
+            report_engine_runs,
+            report_data_freshness,
+            report_config,
+        ):
+            run_check(check, supabase, report)
 
     logger.info("")
     if report.warnings:
