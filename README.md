@@ -114,7 +114,7 @@ launchctl list | grep fplsniper   # all agents should appear
 
 All engines append to `~/Library/Logs/fplsniper/cron.log` (outside the repo — see below). To trigger a run manually: `launchctl kickstart gui/$(id -u)/com.fplsniper.daily`. To roll back to cron: `launchctl bootout` the agents and re-add the crontab lines from git history.
 
-**Limits, honestly:** launchd catches sleep, not shutdown, and a scheduling fix can't catch a broken runtime (the July 2026 venv wipe). Detection is the healthchecks.io dead-man switch (see env vars above) plus the schema assert both engines run at startup — an un-migrated database or dead venv now fails loudly with instructions instead of silently.
+**Limits, honestly:** launchd catches sleep, not shutdown, and a scheduling fix can't catch a broken runtime (the July 2026 venv wipe). Detection is the healthchecks.io dead-man switch (see env vars above) plus the schema assert every engine runs at startup — an un-migrated database or dead venv now fails loudly with instructions instead of silently.
 
 ## Season-start runbook (~August, before GW1)
 
@@ -122,8 +122,8 @@ Ten minutes, once a year. The June–July 2026 incident (system-Python wipe kill
 
 1. **Venv alive?** `.venv/bin/python -c "import supabase; print(supabase.__version__)"` — if it fails: `python3 -m venv .venv && .venv/bin/pip install -r requirements.txt`
 2. **Migrations applied?** `.venv/bin/python fpl_engine.py --daily` — the startup schema assert names any missing migration; apply it in Supabase SQL Editor and re-run until the run succeeds.
-3. **Agents loaded?** `launchctl list | grep fplsniper` — three entries; re-install per above if not.
-4. **Dead-man switch armed?** All three `HEALTHCHECK_URL_*` vars set in `.env`, and the checks show a fresh ping after step 2's run.
+3. **Agents loaded?** `launchctl list | grep fplsniper` — seven entries (`brief`, `daily`, `fetch`, `heartbeat`, `postgw`, `user`, `web`); re-install per above if not.
+4. **Dead-man switch armed?** All four `HEALTHCHECK_URL_*` vars set in `.env`, and the checks show a fresh ping after step 2's run.
 5. **Dry-run the weekly:** `.venv/bin/python fpl_engine.py` then `.venv/bin/python fpl_user_engine.py` — check the summary lines and a new row each in `pipeline_runs`.
 
 ---
@@ -227,7 +227,7 @@ FPL re-issues player IDs, team IDs (1–20) and fixture IDs every season, so all
 
 - **Mid-season** — every row written is stamped with the current season. Nothing changes operationally.
 - **Season end (all 38 GWs finished)** — the next `fpl_engine.py` run does one final ingest, then archives the final `players_master` + `teams` snapshots into `players_season_archive` / `teams_season_archive` (preserving "who was player 233 in 2025/26?"). Runs after that exit early until FPL resets the API. `fpl_user_engine.py` exits early as soon as the season is complete.
-- **New season (FPL API resets, typically early July)** — both engines pick up the new season label automatically; no manual action needed. The curated queries anchor on the latest season, so they switch over on their own (and return nothing in pre-season rather than showing last season's stats under re-issued IDs).
+- **New season (FPL API resets, typically early July)** — all engines pick up the new season label automatically; no manual action needed. The curated queries anchor on the latest season, so they switch over on their own (and return nothing in pre-season rather than showing last season's stats under re-issued IDs).
 
 ---
 
