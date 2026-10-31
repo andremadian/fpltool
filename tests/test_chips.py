@@ -76,3 +76,14 @@ def test_wildcard_gain_vs_scenario(window, projs, my_squad, players, make_proj):
     assert freehit.best_gw == window[0] and freehit.gain_now > 0
     assert f"{wildcard.gain_now}" in wildcard.reason and "5 GWs" in wildcard.reason
     assert f"{freehit.gain_now}" in freehit.reason
+
+
+def test_bb_play_now_uses_rounded_gain(window, projs, make_proj, players):
+    """A 7.96 bench displays as 8.0, so it must play now (display and decision agree)."""
+    scenario = _scenario(window, projs)
+    for pid in scenario.bench_order[10]:
+        projs[pid] = make_proj(pid, 1.99)  # 4 x 1.99 = 7.96
+    bb = evaluate_chips(["bboost"], scenario, projs, window, None, None, players)[0]
+    assert bb.best_gw == window[0]
+    assert bb.gain_now == 8.0 and bb.play_now
+    assert "adds 8.0" in bb.reason and bb.reason.endswith("play now.")

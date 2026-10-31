@@ -65,7 +65,7 @@ def _timing_advice(chip: str, gains: dict[int, float], window: list[int], target
     """Advice for a chip whose value can be compared across window GWs."""
     best = _best_gw(gains, window)
     gain_now, gain_best = gains[target], gains[best]
-    play_now = best == target and gain_now >= CHIP_THRESHOLDS[chip]
+    play_now = best == target and round(gain_now, 1) >= CHIP_THRESHOLDS[chip]
     reason = reason_now(gain_now, best, gain_best) + (" — play now." if play_now else " — hold.")
     return ChipAdvice(chip, round(gain_now, 1), best, round(gain_best, 1), play_now, reason)
 
