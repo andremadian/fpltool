@@ -52,7 +52,7 @@ AWAY_BOOST = 0.9               # attack multiplier away
 ATTACK_MULT_MIN = 0.6
 ATTACK_MULT_MAX = 1.6
 
-FLAG_STATUSES = frozenset("isund")  # GWs flagged with these are skipped in minutes security (note v4)
+FLAG_STATUSES = frozenset("isund")  # a 0-minute GW flagged with these is skipped in minutes security (note v4)
 
 
 @dataclass(frozen=True)
@@ -156,15 +156,20 @@ def _expected_minutes(
     rows: dict[int, HistoryRow], team_gws: list[int], flagged: set[int],
     fix_counts: dict[int, int], last_gw: int,
 ) -> float:
-    """Decayed average minutes per fixture over unflagged team-fixture GWs, capped at 90."""
+    """Decayed average minutes per fixture, capped at 90, skipping flagged 0-minute GWs.
+
+    A flagged GW is dropped only when he played 0 minutes in it (a flagged absence);
+    if that leaves no GWs, the unfiltered sample is used instead.
+    """
     if not rows:
         return 0.0
     first = min(rows)
-    sample = {
+    full = {
         gw: (rows[gw].minutes if gw in rows else 0) / fix_counts[gw]
-        for gw in team_gws if first <= gw <= last_gw and gw not in flagged
+        for gw in team_gws if first <= gw <= last_gw
     }
-    return min(MAX_MINUTES, _decayed_mean(sample, last_gw) or 0.0)
+    sample = {gw: mins for gw, mins in full.items() if not (gw in flagged and mins == 0)}
+    return min(MAX_MINUTES, _decayed_mean(sample or full, last_gw) or 0.0)
 
 
 def _per90(rows: list[HistoryRow], values: list[float], last_gw: int) -> float:

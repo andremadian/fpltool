@@ -4,7 +4,7 @@ from datetime import date, datetime, timedelta, timezone
 import pytest
 
 from brief import model
-from brief.model import project_all
+from brief.model import Projection, project_all
 from brief.set_pieces import resolve_set_pieces
 from brief.types import Fixture, FlagRow, Gameweek, HistoryRow, Player
 
@@ -25,7 +25,8 @@ def _pair(gw: int, home: int, away: int) -> list[Fixture]:
     return [Fixture(gw, home, away, True), Fixture(gw, away, home, False)]
 
 
-def _fixtures(skip: set[tuple[int, int]] = frozenset(), extra: list[Fixture] = ()) -> list[Fixture]:
+def _fixtures(skip: frozenset[tuple[int, int]] = frozenset(),
+              extra: tuple[Fixture, ...] = ()) -> list[Fixture]:
     """1 v 2 and 3 v 4 every GW (home side alternates), minus skipped (gw, team) pairs."""
     out: list[Fixture] = []
     for gw in PAST + WINDOW:
@@ -70,7 +71,8 @@ def _fillers() -> tuple[dict[int, Player], list[HistoryRow]]:
 
 
 def _project(players: dict[int, Player], history: list[HistoryRow],
-             fixtures: list[Fixture] | None = None, flags: list[FlagRow] | None = None):
+             fixtures: list[Fixture] | None = None,
+             flags: list[FlagRow] | None = None) -> dict[int, Projection]:
     """Run project_all over the fillers plus the given players."""
     base_players, base_history = _fillers()
     return project_all(
@@ -83,7 +85,7 @@ def _project(players: dict[int, Player], history: list[HistoryRow],
 def test_double_gw_sums_fixtures() -> None:
     """Two identical fixtures in one GW give twice the single-fixture points."""
     # GW12 is normally 2(h) v 1 and 4(h) v 3; add a second identical 2 v 1 meeting.
-    fixtures = _fixtures(extra=_pair(12, 2, 1))
+    fixtures = _fixtures(extra=tuple(_pair(12, 2, 1)))
     mid = {1: _player(1, 1, "MID")}
     proj = _project(mid, _rows(1, PAST, points=5, xg=0.3, xa=0.2), fixtures)[1]
     single = _project(mid, _rows(1, PAST, points=5, xg=0.3, xa=0.2))[1]
@@ -94,7 +96,7 @@ def test_double_gw_sums_fixtures() -> None:
 
 def test_blank_gw_zero() -> None:
     """A team with no fixture in a window GW projects exactly 0 there."""
-    fixtures = _fixtures(skip={(13, 1)})
+    fixtures = _fixtures(skip=frozenset({(13, 1)}))
     proj = _project({1: _player(1, 1, "MID")}, _rows(1, PAST, points=5, xg=0.3), fixtures)[1]
     assert proj.points[13] == 0.0
     assert proj.captain_basis[13] == 0.0
@@ -153,8 +155,8 @@ def test_captain_basis_excludes_observed() -> None:
     assert proj[1].captain_basis[11] == pytest.approx(proj[2].captain_basis[11])
 
 
-def test_minutes_skip_flagged_gws() -> None:
-    """A GW missed while flagged injured does not drag expected minutes down."""
+def test_flagged_absence_still_excluded() -> None:
+    """A GW missed (0 minutes) while flagged injured does not drag expected minutes down."""
     players = {1: _player(1, 1, "FWD")}
     history = _rows(1, list(range(1, 10)), minutes=90) + _rows(1, [10], minutes=0)
     flags = [FlagRow(1, date(2026, 10, 29), "i", 0)]  # before the GW10 deadline (30 Oct)
@@ -174,6 +176,17 @@ def test_leaky_opponent_raises_attack() -> None:
     assert proj[1].captain_basis[11] > proj[2].captain_basis[11]
     # GW12 reverses venues (2(h) v 1): same opponent away is worth less than at home.
     assert proj[1].captain_basis[12] < proj[1].captain_basis[11]
+
+
+def test_flagged_but_playing_keeps_minutes() -> None:
+    """A starter flagged 'd' at every deadline who keeps playing 90 keeps ~90 expected minutes."""
+    players = {1: _player(1, 1, "MID")}
+    history = _rows(1, PAST, minutes=90)
+    flags = [FlagRow(1, g.deadline.date() - timedelta(days=1), "d", 75)
+             for g in _gameweeks() if g.gw in PAST]
+    proj = _project(players, history, flags=flags)[1]
+    assert proj.exp_minutes[11] == pytest.approx(90)
+    assert proj.points[11] > 0
 
 
 def test_set_piece_resolution_by_club() -> None:
