@@ -95,6 +95,15 @@ class SeasonComplete(Exception):
         self.season = season
 
 
+class PreSeason(Exception):
+    """No locked picks exist yet (before the GW1 deadline): nothing to brief, not a failure."""
+
+    def __init__(self, season: str, reason: str) -> None:
+        """Remember the season and why the run skipped."""
+        super().__init__(reason)
+        self.season = season
+
+
 # ---------------------------------------------------------------- ops helpers
 
 
@@ -219,17 +228,38 @@ def gw1_prices(history: list[HistoryRow]) -> dict[int, float]:
     return {pid: row.price for pid, row in first.items()}
 
 
-def latest_picks(entry_id: int, target: int) -> dict | None:
-    """The entry's picks for target-1, stepping back up to PICKS_LOOKBACK GWs; None if none."""
+def latest_picks(entry_id: int, target: int) -> tuple[int, dict] | None:
+    """(gw, picks) for the latest locked non-Free-Hit GW from target-1 back PICKS_LOOKBACK GWs.
+
+    A Free Hit squad reverts at the next deadline, so it says nothing about the
+    squad that will play the target GW — step past it to the GW before.
+    """
     for gw in range(target - 1, max(target - 1 - PICKS_LOOKBACK, 0), -1):
         picks = fpl_api.fetch_entry_picks(entry_id, gw)
-        if picks is not None:
-            return picks
+        if picks is not None and picks.get("active_chip") != "freehit":
+            return gw, picks
     return None
 
 
+def normalise_picks(picks: list[dict]) -> list[dict]:
+    """Picks with last GW's chip multipliers (3xc, bboost) reset to a plain captain/XI/bench."""
+    return [
+        {**p, "multiplier": 2 if p.get("is_captain") else (1 if p["position"] <= 11 else 0)}
+        for p in picks
+    ]
+
+
+def as_of_gw(history: dict, transfers: list[dict], gw: int) -> tuple[dict, list[dict]]:
+    """History and transfers trimmed to GW `gw`, so bank/purchases match the picks used."""
+    trimmed = {**history, "current": [r for r in history["current"] if r["event"] <= gw]}
+    return trimmed, [t for t in transfers if t["event"] <= gw]
+
+
 def build_rivals(standings: list[dict], my_entry: int, my_picks: dict, target: int) -> list[Rival]:
-    """A Rival per league entry (me included); a rival whose picks can't be fetched gets None."""
+    """A Rival per league entry (me included); a rival whose picks can't be fetched gets None.
+
+    Every squad is normalised to no chip: last GW's chip never applies to the target GW.
+    """
     if not any(row["entry"] == my_entry for row in standings):
         raise RuntimeError(f"My entry {my_entry} is not in league standings — check tracked_leagues")
     rivals: list[Rival] = []
@@ -238,7 +268,8 @@ def build_rivals(standings: list[dict], my_entry: int, my_picks: dict, target: i
             picks: dict | None = my_picks
         else:
             try:
-                picks = latest_picks(row["entry"], target)
+                found = latest_picks(row["entry"], target)
+                picks = found[1] if found else None
             except Exception as exc:
                 logger.warning("Picks for entry %s failed (%s); treating as no squad yet", row["entry"], exc)
                 picks = None
@@ -248,8 +279,8 @@ def build_rivals(standings: list[dict], my_entry: int, my_picks: dict, target: i
             player_name=row.get("player_name") or "",
             rank=row["rank"],
             total=row.get("total") or 0,
-            picks=picks["picks"] if picks else None,
-            chip=picks.get("active_chip") if picks else None,
+            picks=normalise_picks(picks["picks"]) if picks else None,
+            chip=None,
         ))
     return rivals
 
@@ -297,6 +328,8 @@ def run(sb: Any, now: datetime) -> dict:
     target = target_gw(gameweeks, now)
     window = window_gws(target, last_gw=max(g.gw for g in gameweeks))
     today = now.date()
+    if target == 1:
+        raise PreSeason(season, "before the GW1 deadline; no locked picks yet")
     logger.info("Season %s, target GW%d, window %s", season, target, window)
     timer.lap("bootstrap")
 
@@ -318,9 +351,14 @@ def run(sb: Any, now: datetime) -> dict:
 
     my_history = fpl_api.fetch_entry_history(my_entry)
     my_transfers = fpl_api.fetch_entry_transfers(my_entry)
-    my_picks = latest_picks(my_entry, target)
-    if my_picks is None:
-        raise RuntimeError(f"No picks found for my entry {my_entry} in GW{target - 1}..GW{target - PICKS_LOOKBACK}")
+    found = latest_picks(my_entry, target)
+    if found is None:
+        raise PreSeason(season, f"no non-Free-Hit picks for my entry {my_entry} in "
+                                f"GW{max(target - PICKS_LOOKBACK, 1)}..GW{target - 1} yet")
+    picks_gw, my_picks = found
+    if picks_gw != target - 1:
+        logger.info("Using my GW%d picks (GW%d was a Free Hit or missing)", picks_gw, target - 1)
+    my_history, my_transfers = as_of_gw(my_history, my_transfers, picks_gw)
     squad = build_my_squad(my_history, my_transfers, my_picks, players, gw1_prices(history), target)
     standings = fpl_api.fetch_league_standings(league_id)
     rivals = build_rivals(standings, my_entry, my_picks, target)
@@ -419,7 +457,6 @@ def main() -> None:
 
         payload = run(supabase, datetime.now(timezone.utc))
         season, gw = payload["season"], payload["gw"]
-        log_summary(payload)
         mode = payload["mode"]
         target = mode["target"]["player_name"] if mode["target"] else "none"
 
@@ -432,6 +469,10 @@ def main() -> None:
                 "season": season, "gw": gw, "mode": mode["kind"], "payload": payload,
             }).execute()
             rows_written = 1
+        try:
+            log_summary(payload)
+        except Exception as exc:  # cosmetic only: never fail a computed brief over a log line
+            logger.warning("Could not log the brief summary: %s", exc)
         detail = (f"mode={mode['kind']} target={target} {len(payload['scenarios'])} scenarios "
                   f"{round(time.monotonic() - started)}s")
     except SeasonComplete as done:
@@ -439,6 +480,11 @@ def main() -> None:
         season = done.season
         detail = "season complete; no brief to build"
         logger.info("Season %s is complete — no brief to build. Exiting.", done.season)
+    except PreSeason as early:
+        status = "skipped_preseason"
+        season = early.season
+        detail = str(early)
+        logger.info("Pre-season (%s) — no brief to build. Exiting.", early)
     except Exception as exc:
         status = "failed"
         detail = str(exc)[:500]

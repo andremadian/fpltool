@@ -171,3 +171,184 @@ def test_gw1_prices_use_earliest_row() -> None:
 
     assert fpl_brief_engine.gw1_prices(rows) == {5: 5.0}
 
+
+
+FH_SQUAD = [4, 5, 11, 12, 13, 14, 15, 23, 24, 25, 26, 27, 37, 38, 39]
+
+
+def _chip_picks(ids: list[int], captain: int, chip: str | None) -> dict:
+    """A picks payload as the API returns it with `chip` active (multipliers included)."""
+    out = _picks(ids, captain)
+    out["active_chip"] = chip
+    for pick in out["picks"]:
+        if chip == "3xc" and pick["is_captain"]:
+            pick["multiplier"] = 3
+        if chip == "bboost" and pick["position"] > 11:
+            pick["multiplier"] = 1
+    return out
+
+
+def test_build_rivals_resets_last_gw_chips(monkeypatch: pytest.MonkeyPatch) -> None:
+    """3xc and bboost from target-1 don't carry into the target GW; a Free Hit is stepped past."""
+    def fetch(entry_id: int, gw: int) -> dict | None:
+        """Rival 200 on 3xc, 300 on bboost, 400 on Free Hit in GW9 (normal squad in GW8)."""
+        if entry_id == 200:
+            return _chip_picks(RIVAL_SQUAD, 34, "3xc")
+        if entry_id == 300:
+            return _chip_picks(RIVAL_SQUAD, 34, "bboost")
+        return _chip_picks(FH_SQUAD, 37, "freehit") if gw == 9 else _picks(RIVAL_SQUAD, 34)
+    monkeypatch.setattr(fpl_api, "fetch_entry_picks", fetch)
+    standings = [{"entry": e, "entry_name": "", "player_name": "", "rank": i, "total": 0}
+                 for i, e in enumerate((200, 300, 400, MY_ENTRY), start=1)]
+
+    rivals = fpl_brief_engine.build_rivals(standings, MY_ENTRY, _picks(SQUAD_IDS, 31), TARGET)
+
+    for r in rivals:
+        assert r.chip is None
+        for pick in r.picks:
+            assert pick["multiplier"] == (2 if pick["is_captain"] else 1 if pick["position"] <= 11 else 0)
+    by_id = {r.entry_id: r for r in rivals}
+    assert sorted(p["element"] for p in by_id[400].picks) == sorted(RIVAL_SQUAD)
+
+
+def test_rival_projection_ignores_last_gw_chip(faked: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A rival who played 3xc in GW9 projects the same for GW10 as one who didn't."""
+    plain = fpl_brief_engine.run(object(), NOW)
+    monkeypatch.setattr(fpl_api, "fetch_entry_picks", lambda e, gw: (
+        _chip_picks(RIVAL_SQUAD, 34, "3xc") if e == 200 else _fetch_picks(e, gw)))
+
+    chipped = fpl_brief_engine.run(object(), NOW)
+
+    def proj(payload: dict) -> float:
+        """Rival 200's projected points."""
+        return next(r["projected_points"] for r in payload["rivals"] if r["entry_id"] == 200)
+    assert proj(chipped) == proj(plain)
+
+
+def test_my_free_hit_uses_pre_free_hit_squad_and_bank(faked: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """If I Free Hit in GW9, the brief plans from my GW8 squad and GW8 bank."""
+    monkeypatch.setattr(fpl_api, "fetch_entry_history", lambda e: {
+        "current": [{"event": gw, "bank": 0 if gw == 9 else 20} for gw in range(1, TARGET)],
+        "chips": [{"name": "freehit", "event": 9}]})
+    monkeypatch.setattr(fpl_api, "fetch_entry_picks", lambda e, gw: (
+        (_chip_picks(FH_SQUAD, 37, "freehit") if gw == 9 else _picks(SQUAD_IDS, 31))
+        if e == MY_ENTRY else _fetch_picks(e, gw)))
+
+    payload = fpl_brief_engine.run(object(), NOW)
+
+    assert sorted(payload["inputs"]["squad_ids"]) == sorted(SQUAD_IDS)
+    assert payload["inputs"]["bank"] == 2.0
+
+
+def test_target_gw1_is_preseason(faked: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Before the GW1 deadline there is nothing to brief: PreSeason, not a failure."""
+    monkeypatch.setattr(fpl_brief_engine, "target_gw", lambda gameweeks, now: 1)
+
+    with pytest.raises(fpl_brief_engine.PreSeason):
+        fpl_brief_engine.run(object(), NOW)
+
+
+def test_no_picks_for_me_is_preseason(faked: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """No locked picks for my entry yet is a pre-season skip."""
+    monkeypatch.setattr(fpl_api, "fetch_entry_picks", lambda e, gw: None)
+
+    with pytest.raises(fpl_brief_engine.PreSeason):
+        fpl_brief_engine.run(object(), NOW)
+
+
+class _FakeSb:
+    """Records inserts per table; reads return nothing."""
+
+    def __init__(self) -> None:
+        """No inserts yet."""
+        self.inserts: list[tuple[str, dict]] = []
+        self._table = ""
+
+    def table(self, name: str) -> "_FakeSb":
+        """Select a table."""
+        self._table = name
+        return self
+
+    def insert(self, row: dict) -> "_FakeSb":
+        """Record an insert."""
+        self.inserts.append((self._table, row))
+        return self
+
+    def execute(self) -> None:
+        """No-op."""
+
+
+MINI_PAYLOAD = {"season": "2026/27", "gw": TARGET, "window": [10], "scenarios": {}, "rivals": [],
+                "mode": {"kind": "defend", "my_rank": 1, "my_total": 500, "gap": -5, "target": None}}
+
+
+@pytest.fixture
+def main_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> tuple[_FakeSb, list[bool]]:
+    """main() wired to a fake Supabase, recorded pings and a temp dry-run path."""
+    sb, pings = _FakeSb(), []
+    monkeypatch.setattr(fpl_brief_engine, "get_supabase_client", lambda: sb)
+    monkeypatch.setattr(fpl_brief_engine, "wait_for_supabase", lambda s: None)
+    monkeypatch.setattr(fpl_brief_engine, "assert_schema", lambda s, checks=None: None)
+    monkeypatch.setattr(fpl_brief_engine, "ping_healthcheck", lambda ok: pings.append(ok))
+    monkeypatch.setattr(fpl_brief_engine, "DRY_RUN_PATH", tmp_path / "dry.json")
+    return sb, pings
+
+
+def test_main_failure_logs_failed_and_pings_fail(main_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A run error records status=failed, pings /fail and exits 1."""
+    sb, pings = main_env
+    def boom(sb: object, now: datetime) -> dict:
+        """Fail like a network error would."""
+        raise RuntimeError("FPL down")
+    monkeypatch.setattr(fpl_brief_engine, "run", boom)
+    monkeypatch.setattr("sys.argv", ["fpl_brief_engine.py"])
+
+    with pytest.raises(SystemExit) as exit_info:
+        fpl_brief_engine.main()
+
+    assert exit_info.value.code == 1
+    assert [(t, r["status"]) for t, r in sb.inserts] == [("pipeline_runs", "failed")]
+    assert "FPL down" in sb.inserts[0][1]["detail"]
+    assert pings == [False]
+
+
+def test_main_success_inserts_brief(main_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A normal run inserts the brief, logs success with rows_written=1 and pings OK."""
+    sb, pings = main_env
+    monkeypatch.setattr(fpl_brief_engine, "run", lambda sb, now: MINI_PAYLOAD)
+    monkeypatch.setattr("sys.argv", ["fpl_brief_engine.py"])
+
+    fpl_brief_engine.main()
+
+    assert [t for t, _ in sb.inserts] == ["weekly_brief", "pipeline_runs"]
+    assert sb.inserts[0][1]["mode"] == "defend"
+    assert sb.inserts[1][1]["status"] == "success" and sb.inserts[1][1]["rows_written"] == 1
+    assert pings == [True]
+
+
+def test_main_dry_run_writes_nothing(main_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """--dry-run writes the JSON file only: no insert, no pipeline_runs, no ping."""
+    sb, pings = main_env
+    monkeypatch.setattr(fpl_brief_engine, "run", lambda sb, now: MINI_PAYLOAD)
+    monkeypatch.setattr("sys.argv", ["fpl_brief_engine.py", "--dry-run"])
+
+    fpl_brief_engine.main()
+
+    assert sb.inserts == [] and pings == []
+    assert fpl_brief_engine.DRY_RUN_PATH.exists()
+
+
+def test_main_preseason_is_ok_skip(main_env, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pre-season records skipped_preseason and pings OK (no daily /fail spam)."""
+    sb, pings = main_env
+    def early(sb: object, now: datetime) -> dict:
+        """Signal pre-season."""
+        raise fpl_brief_engine.PreSeason("2026/27", "before the GW1 deadline")
+    monkeypatch.setattr(fpl_brief_engine, "run", early)
+    monkeypatch.setattr("sys.argv", ["fpl_brief_engine.py"])
+
+    fpl_brief_engine.main()
+
+    assert [(t, r["status"], r["season"]) for t, r in sb.inserts] == [
+        ("pipeline_runs", "skipped_preseason", "2026/27")]
+    assert pings == [True]
