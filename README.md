@@ -8,6 +8,9 @@ A daily Python script that fetches Fantasy Premier League data and writes it to 
 .
 ├── fpl_engine.py                          # global ingestion (weekly full + --daily light run)
 ├── fpl_user_engine.py                     # user + rivals ingestion (Phase 2)
+├── fpl_brief_engine.py                    # weekly brief engine (Phase 3D) — projections + optimiser → weekly_brief
+├── brief/                                 # weekly-brief modules
+├── tests/                                 # pytest suite for the brief engine
 ├── requirements.txt                       # Python dependencies
 ├── .env.example                           # template for local env vars
 ├── .gitignore
@@ -16,7 +19,7 @@ A daily Python script that fetches Fantasy Premier League data and writes it to 
 ├── launchd/                               # LaunchAgent plists (scheduling — see below)
 ├── sql/queries/                           # curated analytics queries
 └── supabase/
-    └── migrations/                        # apply in numeric order (0001 → 0007)
+    └── migrations/                        # apply in numeric order (0001 → 0014)
 ```
 
 ## What it does
@@ -73,7 +76,7 @@ Then edit `.env`:
 
 - `SUPABASE_URL` — Settings → **Data API** → Project URL (looks like `https://<ref>.supabase.co`)
 - `SUPABASE_SERVICE_ROLE_KEY` — Settings → **API Keys** → **Secret key** (`sb_secret_...`). ⚠️ **Not** the publishable key.
-- `HEALTHCHECK_URL_WEEKLY` / `HEALTHCHECK_URL_DAILY` / `HEALTHCHECK_URL_USER` — optional. Create three checks at [healthchecks.io](https://healthchecks.io) (free tier), one per schedule, and paste each check's ping URL. The engines ping on every run; healthchecks emails you when a ping **doesn't** arrive — the dead-man switch that catches a sleeping Mac, a wiped venv, or any other silent failure. Leave unset to disable.
+- `HEALTHCHECK_URL_WEEKLY` / `HEALTHCHECK_URL_DAILY` / `HEALTHCHECK_URL_USER` / `HEALTHCHECK_URL_BRIEF` — optional. Create one check per schedule at [healthchecks.io](https://healthchecks.io) (free tier) and paste each check's ping URL. The engines ping on every run; healthchecks emails you when a ping **doesn't** arrive — the dead-man switch that catches a sleeping Mac, a wiped venv, or any other silent failure. Leave unset to disable.
 
 `.env` is gitignored — it will not be committed.
 
@@ -89,23 +92,24 @@ Expected output: log lines for upserting teams (20), players (~840), history (~1
 
 ## Scheduling — launchd (the default)
 
-Both engines run on local macOS **launchd** LaunchAgents (migrated from cron in July 2026 — launchd runs a missed scheduled job when the Mac wakes from sleep; cron just skips it). The plists live in [`launchd/`](launchd/):
+The engines run on local macOS **launchd** LaunchAgents (migrated from cron in July 2026 — launchd runs a missed scheduled job when the Mac wakes from sleep; cron just skips it). The plists live in [`launchd/`](launchd/):
 
 | Agent | Schedule (local/WIB) | Runs |
 |---|---|---|
 | `com.fplsniper.daily` | every day 9:00am | `fpl_engine.py --daily` (light run, ~5s) |
 | `com.fplsniper.fetch` | Friday 5:00pm | `fpl_engine.py` (full run, ~2.5min) |
 | `com.fplsniper.user` | Friday 5:30pm + Saturday 10:00am | `fpl_user_engine.py` |
+| `com.fplsniper.brief` | every day 9:30am + Saturday 10:30am | `fpl_brief_engine.py` (weekly brief) |
 
 Install (or re-install after editing a plist):
 
 ```bash
 cp launchd/com.fplsniper.*.plist ~/Library/LaunchAgents/
-for name in fetch daily user; do
+for name in fetch daily user brief; do
   launchctl bootout gui/$(id -u)/com.fplsniper.$name 2>/dev/null
   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.fplsniper.$name.plist
 done
-launchctl list | grep fplsniper   # all three should appear
+launchctl list | grep fplsniper   # all agents should appear
 ```
 
 Both engines append to `~/Library/Logs/fplsniper/cron.log` (outside the repo — see below). To trigger a run manually: `launchctl kickstart gui/$(id -u)/com.fplsniper.daily`. To roll back to cron: `launchctl bootout` the three agents and re-add the crontab lines from git history.
@@ -224,6 +228,22 @@ FPL re-issues player IDs, team IDs (1–20) and fixture IDs every season, so all
 - **Mid-season** — every row written is stamped with the current season. Nothing changes operationally.
 - **Season end (all 38 GWs finished)** — the next `fpl_engine.py` run does one final ingest, then archives the final `players_master` + `teams` snapshots into `players_season_archive` / `teams_season_archive` (preserving "who was player 233 in 2025/26?"). Runs after that exit early until FPL resets the API. `fpl_user_engine.py` exits early as soon as the season is complete.
 - **New season (FPL API resets, typically early July)** — both engines pick up the new season label automatically; no manual action needed. The curated queries anchor on the latest season, so they switch over on their own (and return nothing in pre-season rather than showing last season's stats under re-issued IDs).
+
+---
+
+## Weekly brief (Phase 3D)
+
+`fpl_brief_engine.py` projects every player over a 5-GW window, solves 15 transfer scenarios (free transfers 1-5 x hits 0/4/8) with rival-aware tie-breaking, evaluates chips, and writes one row to `weekly_brief`. The PWA is one screen with five cards — Transfers, Best XI, Captain, You vs rivals, Chips — and picks the scenario client-side.
+
+Setup: apply `supabase/migrations/0014_weekly_brief.sql`, set `HEALTHCHECK_URL_BRIEF` in `.env` (optional), install the `com.fplsniper.brief` plist (see Scheduling above — it runs daily 9:30am + Saturday 10:30am WIB).
+
+```bash
+.venv/bin/python fpl_brief_engine.py             # real run: inserts a weekly_brief row
+.venv/bin/python fpl_brief_engine.py --dry-run   # compute + log only; writes ~/Library/Logs/fplsniper/brief-dryrun.json, no DB write
+.venv/bin/python -m pytest                       # test suite for brief/ and the engine
+```
+
+Before the season's first picks exist the engine records `skipped_preseason` in `pipeline_runs` and exits.
 
 ---
 

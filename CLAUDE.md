@@ -15,6 +15,7 @@ The engines fetch FPL data on a schedule and write it to Supabase Postgres; the 
 | 3A. Pre-season hardening | ✅ shipped (Jul 2026) | daily light run, `player_daily` + `pipeline_runs`, launchd, dead-man alerting, schema assert |
 | 3B. Personal edge PWA | ✅ shipped (Jul 2026) | [PWA brief](FPL_Sniper_Phase3B_PWA_Brief.md): `web/` React+Vite 4-tab installable app (This week / Transfers / Rivals / Chart maker), magic-link auth, migrations 0008 (RLS security lockdown + curated views + `gameweeks`) + 0009 (projection views). Reads Supabase via anon key. $0/month. |
 | 3C. Stats Explorer | ✅ shipped (Jul 2026) | 5th PWA tab: filterable/sortable players & teams tables (season + last-5), migration 0010 (4 explorer views). Reads Supabase via anon key. |
+| 3D. Weekly brief | ✅ shipped (Oct 2026) | `fpl_brief_engine.py` + `brief/` package + migration 0014 + `web/src/brief/`: one-screen PWA (five cards: Transfers, Best XI, Captain, You vs rivals, Chips) fed by one precomputed `weekly_brief` row per run. Replaces the five-tab PWA. Spec: [docs/superpowers/specs/2026-10-31-weekly-brief-design.md](docs/superpowers/specs/2026-10-31-weekly-brief-design.md). |
 | — AI chat agent | ⏸ deferred (Jul 2026) | [Agent brief](FPL_Sniper_Phase3B_ClaudeCode_Brief.md) kept for revival as a PWA chat tab if fixed views prove insufficient |
 | 4+. Sniper Brief, league surface | — | roadmap in [docs/EXPANSION_PLAN.md](docs/EXPANSION_PLAN.md) |
 
@@ -24,7 +25,7 @@ The `users`, `user_rivals`, `conversations`, `messages`, `user_profile` tables e
 
 ## How the pipelines work
 
-The two engines run on separate launchd schedules and write to disjoint sets of tables. They share `.env` and the same Supabase client pattern but are otherwise independent (ops helpers like `assert_schema`/`log_pipeline_run`/`ping_healthcheck` are deliberately duplicated in each, same as `fetch_bootstrap`). Both engines: assert the expected schema at startup (fail loudly naming the missing migration), record every run in `pipeline_runs`, and ping a healthchecks.io URL if configured.
+The three engines run on separate launchd schedules and write to disjoint sets of tables (the brief engine writes only `weekly_brief`). They share `.env` and the same Supabase client pattern but are otherwise independent (ops helpers like `assert_schema`/`log_pipeline_run`/`ping_healthcheck` are deliberately duplicated in each, same as `fetch_bootstrap`). All engines: assert the expected schema at startup (fail loudly naming the missing migration), record every run in `pipeline_runs`, and ping a healthchecks.io URL if configured.
 
 ### Phase 1 — `fpl_engine.py` (global FPL data)
 
@@ -54,6 +55,17 @@ Six-step pipeline called from `main()`:
 
 Summary log line at end: `Phase 2 run complete: N leagues, N rivals, N squad snapshots, N pre-deadline skips, Ns`. Total runtime ~5–30s for typical league sizes.
 
+### Phase 3D — `fpl_brief_engine.py` (weekly brief)
+
+Third engine, same ops conventions (`wait_for_supabase`, `assert_schema` requiring 0014, `pipeline_runs` row on every run, `HEALTHCHECK_URL_BRIEF` ping). Modules live in `brief/` (`data`, `fpl_api`, `model`, `window`, `squad`, `optimise`, `rivals`, `chips`, `payload`, …); tests in `tests/` (`.venv/bin/python -m pytest`).
+
+1. Read this season's `player_history`/`player_daily` from Supabase and the live bootstrap, fixtures, my picks/history/transfers and rivals' picks from the FPL API; target GW = first GW whose deadline is in the future
+2. Project every player over a 5-GW window (decayed form, fixture strength from opponent xG/xGC, minutes security, set pieces — model constants in `brief/model.py`, set-piece takers in `brief/set_pieces.py`)
+3. Decide rival mode (Defend/Chase), then solve 15 scenarios (FT 1–5 x hits 0/4/8) with a scipy `milp`, plus Free Hit / Wildcard / Bench Boost / Triple Captain evaluations
+4. Insert one row into `weekly_brief` (`payload` jsonb holds all scenarios, chips, rival comparison and the inputs used so a wrong answer can be traced)
+
+`--dry-run` computes the payload, logs the summary and writes JSON to `~/Library/Logs/fplsniper/brief-dryrun.json` without touching the DB. Known limit: the public API can't see transfers queued for the upcoming GW, so the brief assumes none were made since the last deadline.
+
 ## Local setup
 
 Detailed in [README.md](README.md), but the short version:
@@ -77,6 +89,7 @@ Always run the engines via `.venv/bin/python` — the system Python has been wip
 - **`com.fplsniper.fetch`:** Friday 5pm WIB — `fpl_engine.py` (weekly full run). Fires ~7.5h *before* the GW deadline, so it refreshes fixtures/FDR for the upcoming GW but cannot see the coming weekend's results — that's `postgw`'s job (see decision #15).
 - **`com.fplsniper.postgw`:** Tuesday 9am WIB — `fpl_engine.py` (full run, after the gameweek has actually finished). This is the run that lands `player_history` and finished `fixtures` for the GW just played, and therefore what the Stats Explorer reads.
 - **`com.fplsniper.user`:** Friday 5:30pm + Saturday 10am WIB — `fpl_user_engine.py`
+- **`com.fplsniper.brief`:** every day 9:30am + Saturday 10:30am WIB — `fpl_brief_engine.py` (after the 9:00 daily/postgw runs have refreshed Supabase; Saturday slot lands after the canonical rival capture)
 - **`com.fplsniper.heartbeat`:** Thursday 8pm WIB — `health_check.py --notify` (report only, writes nothing)
 - **`com.fplsniper.web`:** always on — the Vite dev server on a pinned `http://localhost:5173` (`RunAtLoad` + `KeepAlive`, so it starts at login and restarts if it dies). This is the bookmarkable local PWA until it moves to Vercel. Logs to `~/Library/Logs/fplsniper/web.log`, not `cron.log`. `--strictPort` is deliberate: without it Vite silently falls back to 5174 and the bookmark breaks.
 - **Logs:** `~/Library/Logs/fplsniper/cron.log` — both engines log to the same file. **Must live outside the repo:** this project sits in a Google-Drive-synced `~/Documents`, and launchd's spawn fails with `EX_CONFIG (78)` when it tries to open a `StandardOut/ErrPath` redirect file there (Drive dehydrates/TCC-protects it) — which silently killed *every* scheduled run, not just logging (fixed July 2026, see decision #12). Keep all launchd `StandardOut/ErrPath` values pointed at `~/Library/Logs/`, never `~/Documents`.
@@ -137,6 +150,16 @@ The other half of decision #10. `players_master` is upserted by `id` and nothing
 Two independent faults surfaced together at the first live gameweek of 2026/27. (a) **Cadence:** `player_history` and `fixtures` are written *only* by the full `fpl_engine.py` run, scheduled Friday 17:00 WIB = Friday 10:00 UTC — but the GW deadline is Friday 17:30 UTC. So the full run always fired ~7.5h before the gameweek it was supposed to capture. After GW1 (finished Mon 24 Aug) the DB held **zero 2026/27 `player_history` rows** and all 380 fixtures still `finished=false`, so the 0011 explorer views' `max(season) from fixtures where finished = true` anchor correctly resolved to **2025/26** and the Stats tab served last season. The views were starved, not broken — an easy misdiagnosis, since "shows last season" looks exactly like the decision #13 bug it isn't. Fix: added `com.fplsniper.postgw`, Tuesday 09:00 WIB, running the same full engine after Monday-night matches and bonus confirmation. Friday stays for pre-deadline FDR. Rule of thumb: **the daily run keeps prices/news current; only a post-gameweek full run makes the Stats tab current.**
 (b) **Masked errors:** `assert_schema` caught bare `Exception` and relabelled *every* failure as "apply supabase/migrations/XXXX.sql". On 22 Aug an `httpx.RemoteProtocolError: Server disconnected` (launchd fires a missed job the instant the Mac wakes, before WiFi reassociates) was reported as "apply 0008_pwa_foundation.sql" — an already-applied migration — and killed the Saturday user run with no retry, permanently losing that GW's rival capture. Both engines now `wait_for_supabase()` first (6 attempts, 15s backoff, mirroring `health_check.py`) and `assert_schema` only claims a missing migration for SQLSTATE `42703`/`42P01`; anything else is reported as a connection problem. A missing-schema error during the probe short-circuits the retries so a genuinely un-migrated DB still fails fast with the precise migration name.
 
+**16. The projection model lives in the repo as the weekly-brief engine (Oct 2026).**
+The GW-ahead model used to live in a scratchpad and was lost and rebuilt three times (GW6, GW8, GW9) — each rebuild from memory notes, each slightly different. `fpl_brief_engine.py` + `brief/` is that model made permanent, with tests. Shape: reads Supabase plus the live FPL API, writes only `weekly_brief`, precomputes 15 scenarios (FT 1–5 x hits 0/4/8) so the PWA picks one client-side (instant, works offline). Choices that aren't obvious from the code:
+- **Rival data is fetched live**, not read from `league_rivals`/`rival_team_snapshots` — those only refresh Fri/Sat, so Tue–Fri mode decisions would run on stale standings. League ID and my team ID still come from `tracked_leagues`. Fetched responses are stored only inside the payload; the user-engine tables are never touched.
+- **Rival mode:** Defend or Chase; Chase targets the manager directly above me. A small ownership bonus enters the objective (`RIVAL_BONUS` 0.08), guarded so it only breaks near-ties: it may cost at most `NEAR_TIE_PTS` 2.0 raw points over the window, and captain candidates must be within `CAPTAIN_NEAR_TIE` 0.5 of the top captain basis. **Displayed numbers are always raw projections** — the bonus steers the choice, never the figures shown.
+- **Last week's chips are normalised away:** when reading anyone's latest picks (rivals and me), a chip played last GW is ignored for squad shape, and Free Hit weeks are skipped in favour of the pre-Free-Hit squad — otherwise a Free Hit squad is mistaken for the real one.
+- **Pre-season skip:** with no picks to read yet the run records `skipped_preseason` in `pipeline_runs` and writes nothing.
+- **Flagged-minutes rule:** a GW with an availability flag (injury/doubt) is dropped from the minutes-security sample only when the player played 0 minutes that GW; a flagged player who still played keeps the GW, so a fit regular starter isn't projected to bench forever. If filtering empties the sample the unfiltered one is used.
+- **Old curated views (0008–0013) stay in the DB unused**, and the old `sql/queries` files are left alone — dropping them isn't worth the risk, and the user edits those queries by hand.
+- **The model is not backtested.** The constants come from the original scratchpad model's notes, not a fit to historical points; backtesting is in TODOS.
+
 ## Files
 
 ```
@@ -147,18 +170,21 @@ Two independent faults surfaced together at the first live gameweek of 2026/27. 
 ├── FPL_Sniper_Phase2_ClaudeCode_Brief.md  # Phase 2 brief (source of truth)
 ├── fpl_engine.py                          # Phase 1 ingestion script (global FPL data)
 ├── fpl_user_engine.py                     # Phase 2 ingestion script (user + rivals)
+├── fpl_brief_engine.py                    # Phase 3D weekly brief engine (projection + optimiser → weekly_brief)
 ├── health_check.py                        # read-only pipeline status report (weekly heartbeat)
 ├── requirements.txt                       # pinned deps (shared)
 ├── .env.example                           # env var template (shared)
 ├── .env                                   # local-only, gitignored
 ├── .gitignore
 ├── logs/                                  # gitignored; legacy in-repo log dir (launchd now logs to ~/Library/Logs/fplsniper/, see decision #12)
-├── launchd/                               # LaunchAgent plists (scheduling; daily/fetch/postgw/user/heartbeat/web)
+├── brief/                                 # weekly-brief modules (model, optimiser, rivals, chips, payload, FPL API)
+├── tests/                                 # pytest suite for brief/ + engine (.venv/bin/python -m pytest)
+├── launchd/                               # LaunchAgent plists (scheduling; daily/fetch/postgw/user/brief/heartbeat/web)
 ├── web/                                   # Phase 3B PWA — React + Vite + TS (see below)
-│   ├── src/tabs/                          # ThisWeek / Transfers / Rivals / Charts
-│   ├── src/components/                    # Login, Shell, FreshnessBadge, OfflineBanner, Sparkline, ToastContext
+│   ├── src/brief/                         # Brief screen, cards, useBrief, prefs (localStorage), types
+│   ├── src/components/                    # Login, Shell, FreshnessBadge, OfflineBanner, ToastContext
 │   ├── src/hooks/                         # useAuth, useSupabaseQuery
-│   ├── src/lib/                           # supabaseClient, season
+│   ├── src/lib/                           # supabaseClient, season (untracked — see docs/TODOS.md)
 │   ├── .env.local                         # gitignored; VITE_SUPABASE_URL + VITE_SUPABASE_ANON_KEY
 │   └── package.json                       # npm run dev / build / preview
 ├── sql/
@@ -177,14 +203,15 @@ Two independent faults surfaced together at the first live gameweek of 2026/27. 
         ├── 0010_stats_explorer_views.sql   # Phase 3C — player/team × season/last5 stats views
         ├── 0011_stats_explorer_season_fix.sql  # Phase 3C — anchor on finished-fixture season + archive identity
         ├── 0012_player_season_stats_season_fix.sql  # Phase 3C — same fix for player_season_stats (Charts + expand)
-        └── 0013_players_master_season_stamp.sql  # last_seen_season on players_master + projection view guard
+        ├── 0013_players_master_season_stamp.sql  # last_seen_season on players_master + projection view guard
+        └── 0014_weekly_brief.sql          # weekly_brief output table (RLS owner-read)
 ```
 
 (Plus `.venv/` — gitignored project venv the engines run through; `web/node_modules/` + `web/dist/` — gitignored; and `docs/` — phase-planning context for Claude Chat.)
 
 ## The PWA (`web/`)
 
-Phase 3B frontend: a React 19 + Vite + TypeScript installable PWA, $0/month, reads Supabase directly with the **anon key** (never the service role key) through RLS-locked curated views. Magic-link auth (`Login.tsx` → `useAuth.tsx`); the signed-in user is matched to their data via the `is_me` flag / `gameweeks` + curated views from migration 0008. Five tabs in `src/tabs/`: **This week**, **Transfers**, **Rivals** (war room), **Stats** (explorer — filterable/sortable player & team tables from the `*_explorer_*` views), **Chart maker** (bubble chart). A `FreshnessBadge` reads `pipeline_runs` so the UI shows how stale the data is; `OfflineBanner` handles offline. It runs permanently on `http://localhost:5173` via the `com.fplsniper.web` LaunchAgent (see Deployment), so it's always there to bookmark — no need to start anything. For a one-off foreground run instead, `cd web && npm run dev` (localhost-only — add `-- --host` for phone/PWA testing, and stop the agent first or the port is taken). Because it's the **dev** server, code edits appear on refresh but the PWA install prompt and service worker won't behave like production; that lands with Vercel. The engines and the PWA are decoupled: the PWA only reads what the engines write, so **never** change ingestion to satisfy a UI need without updating the curated views (0008/0009) that sit between them.
+A React 19 + Vite + TypeScript installable PWA, $0/month, reads Supabase directly with the **anon key** (never the service role key), magic-link auth (`Login.tsx` → `useAuth.tsx`). Since Phase 3D it is **one screen** (`src/brief/`), not five tabs: it reads the latest `weekly_brief` row and shows five cards — **Transfers**, **Best XI**, **Captain**, **You vs rivals**, **Chips**. Free-transfer and hit selectors pick one of the 15 precomputed scenarios client-side; the selection is remembered in `localStorage` (try/catch-wrapped, default FT 1 / no hits). `FreshnessBadge` reads `pipeline_runs` (now including the brief engine) and `OfflineBanner` handles offline. The old tabs (This week / Transfers / Rivals / Stats / Chart maker) and their views (0008–0013) are retired in the UI; the views remain in the DB unused (decision #16). It runs permanently on `http://localhost:5173` via the `com.fplsniper.web` LaunchAgent (see Deployment). For a one-off foreground run, `cd web && npm run dev` (localhost-only — add `-- --host` for phone testing, and stop the agent first or the port is taken). Because it's the **dev** server, the install prompt and service worker won't behave like production; that lands with Vercel. The engines and the PWA are decoupled: the PWA only reads what the engines write — a new data shape means changing the `weekly_brief` payload (and `web/src/brief/types.ts`) in a new migration/engine change, never loosening RLS or hitting base tables from the browser.
 
 ## Schema cheat sheet
 
@@ -201,6 +228,7 @@ Phase 3B frontend: a React 19 + Vite + TypeScript installable PWA, $0/month, rea
 - **`league_rivals`** — Phase 2. Mini-league standings, replaced (delete + insert) each run so leavers don't linger. PK `(league_id, rival_fpl_team_id)`.
 - **`rival_team_snapshots`** — Phase 2. Rivals' squads per GW. PK `(season, rival_fpl_team_id, gw)`. Same shape as `user_team_snapshots` minus personal-finance fields.
 - **user/conversation tables** — empty in Phases 1–2; Phase 3+. Note: Phase 2 deliberately uses its own tables instead of these because the existing scaffold FKs to `auth.users` and Phase 2 has no login.
+- **`weekly_brief`** — Phase 3D. One row per brief run: `season`, `gw`, `generated_at`, `mode` (defend/chase), `payload` jsonb (15 scenarios, chips, rival comparison, inputs used). Written by `fpl_brief_engine.py` with the service key; the PWA reads the latest row (RLS owner-read, no browser writes).
 - **`player_explorer_season` / `player_explorer_last5`** — Phase 3C views. One row per player with the full metric set (goals/assists/xG/xA/xGI/xGC/CS/CBIT/BPS/ICT/points_per_90/points_per_million/…), season totals or last-5-GW form. Read by the Stats tab.
 - **`team_explorer_season` / `team_explorer_last5`** — Phase 3C views. One row per club: W/D/L, GF/GA/GD, points, clean sheets (from finished `fixtures`), xG/xA/xGC (from `team_history`), strength ratings.
 
@@ -219,6 +247,7 @@ Phase 3B frontend: a React 19 + Vite + TypeScript installable PWA, $0/month, rea
 - **0011** — Phase 3C. Rewrites the four explorer views to anchor on the latest *finished-fixture* season and resolve identity from the season archives (see decision #13). Fixes the all-zero team tab, mis-attributed names, and pre-season `form = 0` seen at the 2025/26→2026/27 rollover. Idempotent (`drop view if exists` + recreate). Apply via SQL Editor.
 - **0012** — Phase 3C. Applies the same archive-resolver fix to the `player_season_stats` view (read by the Chart maker and the player row-expand). Same idempotent drop+recreate. Apply via SQL Editor.
 - **0013** — Adds `players_master.last_seen_season`, backfills it (from the latest `player_daily` batch, then the identity archive), and adds a season guard to the two `*_projection` views' club-enumeration join. **`fpl_engine.py`'s schema assert requires this** — the engine fails loudly until it's applied. Idempotent (`add column if not exists` + `create or replace view`). Apply via SQL Editor. See decision #14.
+- **0014** — Phase 3D. Creates `weekly_brief` with RLS + the owner-read policy and revokes browser writes. **`fpl_brief_engine.py`'s schema assert requires this.** Idempotent. Apply via SQL Editor. See decision #16.
 
 ## Conventions
 
@@ -234,6 +263,7 @@ Phase 3B frontend: a React 19 + Vite + TypeScript installable PWA, $0/month, rea
 - For Phase 1 changes: stay focused on the global ingestion pipeline (`fpl_engine.py` and the data tables it writes). Don't pre-emptively touch the user/conversation tables — those are Phase 3+ scope.
 - For Phase 2 changes: stay in `fpl_user_engine.py` and the four Phase 2 tables. Do not modify `fpl_engine.py` or Phase 1 tables — the two engines are intentionally separate.
 - For PWA (Phase 3B) changes: stay in `web/`. The frontend reads Supabase via the **anon key** through the RLS-locked curated views from migrations 0008/0009 — never wire it to the service-role key, and if it needs a new shape of data, add/adjust a curated view in a new migration rather than loosening RLS or having the browser hit base tables. Don't change the engines to satisfy a UI need without going through the views.
+- For weekly-brief changes: stay in `fpl_brief_engine.py`, `brief/` and `web/src/brief/`; keep `tests/` green (`.venv/bin/python -m pytest`). The engine writes only `weekly_brief` — don't have it write the user-engine tables.
 - For new phases: ask the user for the next brief before starting. Each phase has its own brief.
 - For schema changes: never modify a migration file after it's been applied. Create a new migration file (next sequential number) and add it.
 - For deployment changes: scheduling is launchd (`launchd/` plists in the repo, installed to `~/Library/LaunchAgents/`, labels `com.fplsniper.*`). Edit the repo copy, re-copy, and `launchctl bootout` + `bootstrap`. The crontab no longer has FPL entries — don't touch what's there (Transfez Market Monitoring).

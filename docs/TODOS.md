@@ -23,6 +23,13 @@ User-side prerequisites for 3B: a Vercel account (free Hobby tier), and the Supa
 
 - [x] **Stats Explorer tab** — 5th PWA tab. Migration 0010 adds four `security_invoker` views (`player_explorer_season/last5`, `team_explorer_season/last5`). Filterable (name search + position/team dropdowns + per-metric min/max ranges), sortable, season/last-5 toggle, sticky-name horizontal-scroll table, player-row expand (shared `PlayerDetail`). Spec: [superpowers/specs/2026-07-25-stats-explorer-design.md](superpowers/specs/2026-07-25-stats-explorer-design.md); plan: [superpowers/plans/2026-07-25-stats-explorer.md](superpowers/plans/2026-07-25-stats-explorer.md).
 
+## Weekly brief follow-ups (shipped 2026-10-31)
+
+- [ ] **Fix `.gitignore` so `web/src/lib/` is tracked** — the Python `lib/` rule also ignores `web/src/lib/`, so `supabaseClient.ts` has never been committed and a fresh clone can't build the PWA. Fix: add a `!web/src/lib/` exception. Left unapplied because `.gitignore` has uncommitted user edits — apply it yourself, then `git add web/src/lib/`.
+- [ ] **Backtest the projection model** — constants were tuned by hand-checked cases, never against historical points.
+- [ ] **Season-long chip planning** — chips are evaluated within the 5-GW window only.
+- [ ] **Queued-transfer awareness** — the public API can't show transfers made for the upcoming GW; the brief assumes none.
+
 ## Then (Phase 4 — the Sniper Brief)
 
 - [ ] **Write the Phase 4 brief** (after 3B session 3) — scheduled agent run (cron-shaped, reuses 3B's agent core + notifier), composes the Friday pre-deadline push: projected XI, captain ranking, transfers with rival-swing context, price/news alerts from `player_daily`, freshness footer. Saturday post-deadline recap optional. Off-season: monthly quiet-mode digest. `user_profile` learning starts here.
