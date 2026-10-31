@@ -11,7 +11,7 @@ from brief.availability import needs_doubt_note
 from brief.chips import ChipAdvice
 from brief.model import Projection
 from brief.optimise import Solution
-from brief.rivals import Mode, Rival, rival_projection
+from brief.rivals import CAPTAIN_NEAR_TIE, Mode, Rival, rival_projection
 from brief.squad import MySquad
 from brief.types import Player
 
@@ -19,7 +19,7 @@ log = logging.getLogger(__name__)
 
 PAYLOAD_VERSION = 1
 HIT_COST = 4  # points a single extra transfer costs
-
+CAPTAIN_OPTIONS = 5  # XI players listed by captain basis on the captain card
 
 
 def scenario_key(ft: int, hits: int) -> str:
@@ -75,6 +75,11 @@ def _ref(player: Player) -> dict:
 def _slot(player: Player, projs: dict[int, Projection], gw: int) -> dict:
     """The PlayerSlot block: ref + target-GW points + flag."""
     return {**_ref(player), "proj": _r1(_pts(projs, player.id, gw)), "flag": _flag(player)}
+
+
+def _basis_slot(player: Player, projs: dict[int, Projection], gw: int) -> dict:
+    """A PlayerSlot plus its target-GW captain basis (expected output)."""
+    return {**_slot(player, projs, gw), "basis": _r1(_basis(projs, player.id, gw))}
 
 
 def _rival_counts(rivals: list[Rival], my_entry: int) -> tuple[int, dict[int, int], dict[int, int]]:
@@ -147,39 +152,54 @@ def _strip(rows: list[dict]) -> list[dict]:
 
 def _hit_note(res: ScenarioResult, extras: dict[tuple[int, int], list[dict]],
               by_key: dict[tuple[int, int], ScenarioResult], window: list[int]) -> str | None:
-    """Note on whether a -4 beats this hit-free scenario; None unless the extra move out-gains its cost."""
+    """Note on whether the -4 scenario beats this hit-free one; None unless it nets more.
+
+    The numbers are scenario-level (the hit scenario may also change the free moves);
+    the best extra pair only names the move.
+    """
     if res.hits != 0:
         return None
     hit = by_key.get((res.ft, HIT_COST))
-    if hit is None or hit.solution.raw_total <= res.solution.raw_total:
+    if hit is None or hit.solution.hit_cost != HIT_COST:
         return None
+    net = hit.solution.raw_total - res.solution.raw_total
     pairs = extras[(res.ft, res.hits)]
-    if not pairs:
+    if _r1(net) <= 0 or not pairs:
         return None
     best = max(pairs, key=lambda t: t["_gain"])
-    gain = best["_gain"]
-    if gain <= HIT_COST:
-        return None
     return (f"A -{HIT_COST} for {best['out']['name']}→{best['in']['name']} gains "
-            f"+{_r1(gain)} over {len(window)} GWs, net +{_r1(gain - HIT_COST)}.")
+            f"+{_r1(net + HIT_COST)} over {len(window)} GWs, net +{_r1(net)}.")
+
+
+def _captain_reason(cap: Player, xi: list[int], gw: int, players: dict[int, Player],
+                    projs: dict[int, Projection]) -> str:
+    """Why this captain, true of both the displayed points and the displayed captain basis."""
+    cap_pts, cap_basis = _pts(projs, cap.id, gw), _basis(projs, cap.id, gw)
+    others = [p for p in xi if p != cap.id]
+    if not others:
+        return f"{cap.name} projects {_r1(cap_pts)}"
+    top = max(others, key=lambda p: (_basis(projs, p, gw), -p))
+    top_basis = _basis(projs, top, gw)
+    if top_basis > cap_basis + CAPTAIN_NEAR_TIE:
+        return (f"{cap.name} projects {_r1(cap_pts)}; {players[top].name} rates higher on "
+                f"expected output ({_r1(top_basis)} vs {_r1(cap_basis)})")
+    if top_basis > cap_basis:
+        return f"{cap.name} projects {_r1(cap_pts)}, near-tied with {players[top].name} on expected output"
+    alt = max(others, key=lambda p: (_pts(projs, p, gw), -p))
+    alt_pts = _pts(projs, alt, gw)
+    if alt_pts > cap_pts:
+        return (f"{cap.name} picked on expected output; {players[alt].name} projects higher "
+                f"on form ({_r1(alt_pts)} vs {_r1(cap_pts)})")
+    return f"{cap.name} projects {_r1(cap_pts)} (next best {_r1(alt_pts)}: {players[alt].name})"
 
 
 def _captain_block(
     sol: Solution, gw: int, players: dict[int, Player], projs: dict[int, Projection],
     mode: Mode, n: int, captains: dict[int, int],
 ) -> dict:
-    """The captain PlayerSlot plus its reason."""
+    """The captain PlayerSlot plus its captain basis and reason."""
     cap = players[sol.captain[gw]]
-    others = [p for p in sol.xi[gw] if p != cap.id]
-    alt = max(others, key=lambda p: _pts(projs, p, gw)) if others else None
-    cap_pts = _r1(_pts(projs, cap.id, gw))
-    reason = f"{cap.name} projects {cap_pts}"
-    if alt is not None:
-        alt_pts = _r1(_pts(projs, alt, gw))
-        if _pts(projs, cap.id, gw) >= _pts(projs, alt, gw):
-            reason += f" (next best {alt_pts}: {players[alt].name})"
-        else:
-            reason += f", near-tied with {players[alt].name} on {alt_pts}"
+    reason = _captain_reason(cap, sol.xi[gw], gw, players, projs)
     if mode.kind == "defend":
         k = captains.get(cap.id, 0)
         if k > 0:
@@ -188,7 +208,14 @@ def _captain_block(
         captained = {p["element"] for p in mode.target.picks if p.get("is_captain")}
         if cap.id not in captained:
             reason += f" · {mode.target.player_name} isn't captaining him"
-    return {**_slot(cap, projs, gw), "reason": reason}
+    return {**_basis_slot(cap, projs, gw), "reason": reason}
+
+
+def _captain_options(xi: list[int], gw: int, players: dict[int, Player],
+                     projs: dict[int, Projection]) -> list[dict]:
+    """The top CAPTAIN_OPTIONS XI players by captain basis, each with its basis."""
+    ranked = sorted(xi, key=lambda p: (-_basis(projs, p, gw), -_pts(projs, p, gw), p))
+    return [_basis_slot(players[p], projs, gw) for p in ranked[:CAPTAIN_OPTIONS]]
 
 
 def _formation(xi: list[int], players: dict[int, Player]) -> str:
@@ -224,7 +251,8 @@ def _scenario_block(
         "xi": [_slot(players[p], projs, gw) for p in xi],
         "bench": [_slot(players[p], projs, gw) for p in sol.bench_order[gw]],
         "captain": _captain_block(sol, gw, players, projs, mode, n, captains),
-        "vice": _slot(players[sol.vice[gw]], projs, gw),
+        "vice": _basis_slot(players[sol.vice[gw]], projs, gw),
+        "captain_options": _captain_options(xi, gw, players, projs),
         "projected_points": _r1(projected),
         "mode_changed_answer": res.mode_changed,
         "chips": [_round_chip(c) for c in res.chips],
@@ -262,8 +290,9 @@ def _mode_block(mode: Mode) -> dict:
 
 
 def build_payload(
-    *, season: str, window: list[int], generated_at: datetime, mode: Mode, rivals: list[Rival],
-    my_entry: int, players: dict[int, Player], projs: dict[int, Projection], squad: MySquad,
+    *, season: str, window: list[int], generated_at: datetime, deadline: datetime, mode: Mode,
+    rivals: list[Rival], my_entry: int, players: dict[int, Player], projs: dict[int, Projection],
+    squad: MySquad,
     scenarios: list[ScenarioResult], hold_total: float, priority_sells: dict[int, int],
 ) -> dict:
     """Build the version-1 weekly brief payload."""
@@ -294,9 +323,10 @@ def build_payload(
         "season": season,
         "gw": gw,
         "generated_at": generated_at.isoformat(),
+        "deadline": deadline.isoformat(),
         "window": list(window),
         "mode": _mode_block(mode),
-        "assumption": f"Assumes no transfers made since the GW{gw} deadline.",
+        "assumption": f"Assumes no transfers made since the GW{gw - 1} deadline.",
         "rivals": [_rival_row(r, mode, projs, gw, players) for r in others],
         "scenarios": blocks,
         "inputs": {

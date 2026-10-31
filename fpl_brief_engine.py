@@ -87,7 +87,7 @@ SCHEMA_CHECKS = [
 
 
 class SeasonComplete(Exception):
-    """Every gameweek is finished: there is no brief to build until next season."""
+    """Every gameweek is finished or locked: there is no brief to build until next season."""
 
     def __init__(self, season: str) -> None:
         """Remember which season ended."""
@@ -96,7 +96,7 @@ class SeasonComplete(Exception):
 
 
 class PreSeason(Exception):
-    """No locked picks exist yet (before the GW1 deadline): nothing to brief, not a failure."""
+    """Before the GW1 deadline, or no history yet this season: nothing to brief, not a failure."""
 
     def __init__(self, season: str, reason: str) -> None:
         """Remember the season and why the run skipped."""
@@ -325,7 +325,10 @@ def run(sb: Any, now: datetime) -> dict:
     if season_is_complete(bootstrap):
         raise SeasonComplete(season)
     gameweeks = gameweeks_from_bootstrap(bootstrap)
+    if all(g.deadline <= now for g in gameweeks):
+        raise SeasonComplete(season)  # final GW locked: nothing left to advise on
     target = target_gw(gameweeks, now)
+    deadline = next(g.deadline for g in gameweeks if g.gw == target)
     window = window_gws(target, last_gw=max(g.gw for g in gameweeks))
     today = now.date()
     if target == 1:
@@ -334,6 +337,8 @@ def run(sb: Any, now: datetime) -> dict:
     timer.lap("bootstrap")
 
     history = data.load_history(sb, season)
+    if not any(row.gw < target for row in history):
+        raise PreSeason(season, "no player_history for this season yet")
     fixtures = data.load_fixtures(sb, season)
     flags = data.load_flags(sb, season)
     league_id, my_entry = data.load_tracked_league(sb)
@@ -353,8 +358,8 @@ def run(sb: Any, now: datetime) -> dict:
     my_transfers = fpl_api.fetch_entry_transfers(my_entry)
     found = latest_picks(my_entry, target)
     if found is None:
-        raise PreSeason(season, f"no non-Free-Hit picks for my entry {my_entry} in "
-                                f"GW{max(target - PICKS_LOOKBACK, 1)}..GW{target - 1} yet")
+        raise RuntimeError(f"no non-Free-Hit picks for my entry {my_entry} in "
+                           f"GW{max(target - PICKS_LOOKBACK, 1)}..GW{target - 1}")
     picks_gw, my_picks = found
     if picks_gw != target - 1:
         logger.info("Using my GW%d picks (GW%d was a Free Hit or missing)", picks_gw, target - 1)
@@ -399,7 +404,7 @@ def run(sb: Any, now: datetime) -> dict:
             priority_sells[pid] = sum(1 for m in mults if m == 0.0)
 
     payload = build_payload(
-        season=season, window=window, generated_at=now, mode=mode, rivals=rivals,
+        season=season, window=window, generated_at=now, deadline=deadline, mode=mode, rivals=rivals,
         my_entry=my_entry, players=players, projs=projs, squad=squad, scenarios=scenarios,
         hold_total=hold.raw_total, priority_sells=priority_sells,
     )

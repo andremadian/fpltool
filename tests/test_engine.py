@@ -118,6 +118,7 @@ def test_run_end_to_end_with_fakes(faked: None) -> None:
     assert payload["season"] == "2026/27"
     assert payload["gw"] == TARGET
     assert payload["window"] == [10, 11, 12, 13, 14]
+    assert payload["deadline"] == _deadline(TARGET).isoformat()
     assert len(payload["scenarios"]) == 15
     assert payload["mode"]["kind"] == "chase"
     assert payload["mode"]["target"]["entry_id"] == 300
@@ -248,12 +249,29 @@ def test_target_gw1_is_preseason(faked: None, monkeypatch: pytest.MonkeyPatch) -
         fpl_brief_engine.run(object(), NOW)
 
 
-def test_no_picks_for_me_is_preseason(faked: None, monkeypatch: pytest.MonkeyPatch) -> None:
-    """No locked picks for my entry yet is a pre-season skip."""
+def test_no_picks_for_me_mid_season_fails(faked: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """From GW2 on, no locked picks for my entry is a real failure, not a pre-season skip."""
     monkeypatch.setattr(fpl_api, "fetch_entry_picks", lambda e, gw: None)
 
-    with pytest.raises(fpl_brief_engine.PreSeason):
+    with pytest.raises(RuntimeError, match="no non-Free-Hit picks for my entry"):
         fpl_brief_engine.run(object(), NOW)
+
+
+def test_no_history_before_target_is_preseason(faked: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Past GW1 but with no player_history rows yet: skip as pre-season, never a junk brief."""
+    monkeypatch.setattr(data, "load_history", lambda sb, season: [
+        r for r in _history(sb, season) if r.gw >= TARGET])
+
+    with pytest.raises(fpl_brief_engine.PreSeason, match="no player_history for this season yet"):
+        fpl_brief_engine.run(object(), NOW)
+
+
+def test_final_gw_locked_is_season_complete(faked: None, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every deadline passed but GW38 not finished: nothing left to advise, so SeasonComplete."""
+    after_last = _deadline(38) + timedelta(hours=1)
+
+    with pytest.raises(fpl_brief_engine.SeasonComplete):
+        fpl_brief_engine.run(object(), after_last)
 
 
 class _FakeSb:

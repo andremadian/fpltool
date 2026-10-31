@@ -11,6 +11,35 @@ const HIT_OPTIONS: { value: Hits; label: string }[] = [
   { value: 8, label: '−8' },
 ]
 const FALLBACK_SCENARIO = '1_0'
+/** A brief older than this reads as stale, as does one whose deadline has passed. */
+const STALE_AFTER_MS = 36 * 60 * 60 * 1000
+
+/** "Saturday 1 Nov, 18:30" in the viewer's locale and time zone. */
+function formatDeadline(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/** "31 Oct, 09:30" in the viewer's locale and time zone. */
+function formatGenerated(iso: string): string {
+  return new Date(iso).toLocaleString(undefined, {
+    day: 'numeric',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+  })
+}
+
+/** True when the brief is over 36h old or its target GW's deadline has passed. */
+function isStale(generatedAt: string, deadline: string | undefined, now: number): boolean {
+  if (now - new Date(generatedAt).getTime() > STALE_AFTER_MS) return true
+  return deadline !== undefined && now > new Date(deadline).getTime()
+}
 
 /** 1 → "1st", 2 → "2nd", 11 → "11th", 23 → "23rd". */
 function ordinal(n: number): string {
@@ -33,6 +62,7 @@ function modeLabel(mode: Mode): string {
 export function Brief() {
   const state = useBrief()
   const [prefs, setPrefs] = useState<BriefPrefs>(loadPrefs)
+  const [now] = useState(() => Date.now())
 
   const update = (next: BriefPrefs) => {
     setPrefs(next)
@@ -46,12 +76,24 @@ export function Brief() {
   }
 
   const brief = state.brief
+  const generatedAt = state.generatedAt ?? brief.generated_at
+  // Briefs written before `deadline` existed lack it; render without the subline.
+  const deadline: string | undefined = brief.deadline
+  const stale = isStale(generatedAt, deadline, now)
   const scenario =
     brief.scenarios[`${prefs.ft}_${prefs.hits}`] ?? brief.scenarios[FALLBACK_SCENARIO]
   if (!scenario) return <p className="brief-status">This brief has no scenarios to show.</p>
 
   return (
     <div className="brief">
+      <header className="brief-header">
+        <h1 className="brief-title">Gameweek {brief.gw}</h1>
+        {deadline && <p className="brief-deadline">Deadline {formatDeadline(deadline)}</p>}
+        <p className={`brief-generated${stale ? ' brief-stale' : ''}`}>
+          Generated {formatGenerated(generatedAt)}
+          {stale && ' (stale)'}
+        </p>
+      </header>
       <div className="brief-controls">
         <div className="brief-control">
           <span className="brief-control-label" id="ft-label">
@@ -90,9 +132,7 @@ export function Brief() {
           </div>
         </div>
         <span className={`brief-mode brief-mode-${brief.mode.kind}`}>{modeLabel(brief.mode)}</span>
-        <p className="brief-assumption">
-          GW{brief.gw} · {brief.assumption}
-        </p>
+        <p className="brief-assumption">{brief.assumption}</p>
       </div>
 
       <TransfersCard scenario={scenario} />

@@ -22,7 +22,12 @@ export interface PlayerSlot extends PlayerRef {
   flag: PlayerFlag | null
 }
 
-export interface CaptainSlot extends PlayerSlot {
+/** A PlayerSlot plus its target-GW captain basis (expected output, 1 decimal). */
+export interface BasisSlot extends PlayerSlot {
+  basis: number
+}
+
+export interface CaptainSlot extends BasisSlot {
   reason: string
 }
 
@@ -59,7 +64,9 @@ export interface Scenario {
   xi: PlayerSlot[]
   bench: PlayerSlot[]
   captain: CaptainSlot
-  vice: PlayerSlot
+  vice: BasisSlot
+  /** Top 5 XI players by captain basis, highest first. */
+  captain_options: BasisSlot[]
   projected_points: number
   mode_changed_answer: boolean
   chips: ChipAdvice[]
@@ -105,6 +112,8 @@ export interface BriefPayload {
   season: string
   gw: number
   generated_at: string
+  /** ISO deadline of the target GW (`gw`). */
+  deadline: string
   window: number[]
   mode: Mode
   assumption: string

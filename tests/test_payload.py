@@ -4,6 +4,7 @@ from dataclasses import replace
 from datetime import datetime, timezone
 
 from brief.chips import ChipAdvice
+from brief.model import Projection
 from brief.optimise import Solution
 from brief.payload import ScenarioResult, build_payload, scenario_key
 from brief.rivals import Mode, Rival
@@ -12,6 +13,7 @@ from tests.conftest import SQUAD_IDS, WINDOW
 
 ME = 100
 NOW = datetime(2026, 10, 31, 12, 0, tzinfo=timezone.utc)
+DEADLINE = datetime(2026, 11, 1, 11, 0, tzinfo=timezone.utc)
 
 
 def _solution(swaps: list[tuple[int, int]], raw_total: float, hit_cost: int = 0) -> Solution:
@@ -40,7 +42,7 @@ def _build(players, projs, scenarios, mode=None, rivals=None, squad=None, sells=
     rivals = rivals if rivals is not None else [_rival(ME, 2), _rival(1, 1, [_pick(31, 1, True)])]
     mode = mode or Mode("chase", 2, 98, rivals[1], 2)
     squad = squad or MySquad(list(SQUAD_IDS), {p: players[p].price for p in SQUAD_IDS}, 2.0, [], 9)
-    return build_payload(season="2026/27", window=list(WINDOW), generated_at=NOW, mode=mode,
+    return build_payload(season="2026/27", window=list(WINDOW), generated_at=NOW, deadline=DEADLINE, mode=mode,
                          rivals=rivals, my_entry=ME, players=players, projs=projs, squad=squad,
                          scenarios=scenarios, hold_total=100.0, priority_sells={6: 4} if sells is None else sells)
 
@@ -60,7 +62,8 @@ def test_payload_has_15_scenarios(players, projs):
     s = payload["scenarios"]["1_0"]
     assert s["formation"] == "3-4-3"
     assert len(s["xi"]) == 11 and len(s["bench"]) == 4
-    assert payload["assumption"] == "Assumes no transfers made since the GW10 deadline."
+    assert payload["assumption"] == "Assumes no transfers made since the GW9 deadline."
+    assert payload["deadline"] == "2026-11-01T11:00:00+00:00"
     assert payload["inputs"]["selling"]["1"] == players[1].price
 
 
@@ -142,16 +145,62 @@ def test_payload_json_serialisable(players, projs):
     assert back["scenarios"]["1_0"]["chips"][0]["gain_best"] == 9.3
 
 
-def test_captain_reason_uses_displayed_points(players, projs, make_proj):
-    """A top-points captain reads 'next best'; a tie-break captain reads 'near-tied'."""
-    _boost(projs, make_proj, 31, 6.0)
+def _split(pid: int, pts: float, basis: float) -> Projection:
+    """A projection whose captain basis differs from its points."""
+    return Projection(pid, {g: pts for g in WINDOW}, {g: basis for g in WINDOW},
+                      {g: 90.0 for g in WINDOW})
+
+
+def _captain(players, projs) -> dict:
+    """The 1_0 captain block of a hold scenario (captain P31, vice P32)."""
     top = ScenarioResult(1, 0, _solution([], 100.0), False, [])
-    reason = _build(players, projs, [top])["scenarios"]["1_0"]["captain"]["reason"]
-    assert reason.startswith("P31 projects 6.0 (next best ")
-    _boost(projs, make_proj, 32, 6.2)
-    reason = _build(players, projs, [top])["scenarios"]["1_0"]["captain"]["reason"]
-    assert reason.startswith("P31 projects 6.0, near-tied with P32 on 6.2")
+    return _build(players, projs, [top])["scenarios"]["1_0"]["captain"]
+
+
+def test_captain_reason_top_basis_and_points(players, projs, make_proj):
+    """Top on both expected output and points: 'next best' by points."""
+    _boost(projs, make_proj, 31, 6.0)
+    cap = _captain(players, projs)
+    assert cap["reason"].startswith("P31 projects 6.0 (next best 5.7: P33)")
+    assert cap["basis"] == 6.0
+
+
+def test_captain_reason_near_tie_on_basis(players, projs):
+    """A captain within CAPTAIN_NEAR_TIE of the top basis reads 'near-tied ... on expected output'."""
+    projs[31] = _split(31, 6.0, 6.0)
+    projs[32] = _split(32, 5.0, 6.3)
+    reason = _captain(players, projs)["reason"]
+    assert reason.startswith("P31 projects 6.0, near-tied with P32 on expected output")
     assert "next best" not in reason
+
+
+def test_captain_reason_top_basis_lower_points(players, projs):
+    """Top basis but out-projected on points: says it was picked on expected output."""
+    projs[31] = _split(31, 6.0, 7.0)
+    projs[32] = _split(32, 6.5, 5.0)
+    reason = _captain(players, projs)["reason"]
+    assert reason.startswith("P31 picked on expected output; P32 projects higher on form (6.5 vs 6.0)")
+
+
+def test_captain_reason_far_below_top_basis(players, projs):
+    """A captain clearly behind on expected output never claims to be picked on it."""
+    projs[31] = _split(31, 6.0, 6.0)
+    projs[32] = _split(32, 5.0, 8.0)
+    reason = _captain(players, projs)["reason"]
+    assert reason.startswith("P31 projects 6.0; P32 rates higher on expected output (8.0 vs 6.0)")
+    assert "picked on expected output" not in reason
+
+
+def test_captain_options_sorted_by_basis(players, projs):
+    """captain_options: the top 5 XI players by captain basis, each with its basis; vice has basis."""
+    projs[18] = _split(18, 3.0, 9.0)
+    top = ScenarioResult(1, 0, _solution([], 100.0), False, [])
+    s = _build(players, projs, [top])["scenarios"]["1_0"]
+    opts = s["captain_options"]
+    assert len(opts) == 5
+    assert opts[0]["id"] == 18 and opts[0]["basis"] == 9.0 and opts[0]["proj"] == 3.0
+    assert [o["basis"] for o in opts] == sorted((o["basis"] for o in opts), reverse=True)
+    assert s["vice"]["id"] == 32 and s["vice"]["basis"] == round(projs[32].captain_basis[10], 1)
 
 
 def test_chase_captain_suffix(players, projs):
@@ -165,13 +214,26 @@ def test_chase_captain_suffix(players, projs):
     assert "captaining" not in reason
 
 
-def test_hit_note_null_when_extra_pair_gains_less_than_cost(players, projs, make_proj):
-    """A -4 that wins on net only through other moves, with a sub-4 extra pair, gives no note."""
+def test_hit_note_net_is_scenario_level(players, projs, make_proj):
+    """The hit re-chooses the free transfer too: net is the raw_total difference, not the pair gain."""
     _boost(projs, make_proj, 11, 8.0)
-    _boost(projs, make_proj, 12, 4.5)  # vs P7 ~4.05 -> +2.25 over the window
+    _boost(projs, make_proj, 12, 9.0)
+    _boost(projs, make_proj, 13, 6.0)
     free = ScenarioResult(1, 0, _solution([(6, 11)], 110.0), False, [])
-    paid = ScenarioResult(1, 4, _solution([(6, 11), (7, 12)], 112.0, 4), False, [])
-    assert _build(players, projs, [free, paid])["scenarios"]["1_0"]["hit_note"] is None
+    paid = ScenarioResult(1, 4, _solution([(6, 12), (7, 13)], 113.2, 4), False, [])
+    note = _build(players, projs, [free, paid])["scenarios"]["1_0"]["hit_note"]
+    assert note == "A -4 for P7→P12 gains +7.2 over 5 GWs, net +3.2."
+
+
+def test_hit_note_null_unless_hit_scenario_nets_more(players, projs, make_proj):
+    """No note when the -4 scenario nets nothing (even rounded) or paid no hit at all."""
+    _boost(projs, make_proj, 11, 8.0)
+    _boost(projs, make_proj, 12, 9.0)
+    free = ScenarioResult(1, 0, _solution([(6, 11)], 110.0), False, [])
+    flat = ScenarioResult(1, 4, _solution([(6, 11), (7, 12)], 110.04, 4), False, [])
+    assert _build(players, projs, [free, flat])["scenarios"]["1_0"]["hit_note"] is None
+    swap = ScenarioResult(1, 4, _solution([(6, 12)], 115.0, 0), False, [])
+    assert _build(players, projs, [free, swap])["scenarios"]["1_0"]["hit_note"] is None
 
 
 def test_hit_note_pairs_only_the_extra_moves(players, projs, make_proj):

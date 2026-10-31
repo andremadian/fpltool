@@ -237,6 +237,35 @@
   color: #d18b1b;
 }
 
+.brief-header {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.brief-title {
+  font-size: 28px;
+  font-weight: 600;
+  letter-spacing: -0.3px;
+  line-height: 1.15;
+  margin: 0;
+}
+
+.brief-deadline {
+  font-size: 15px;
+  color: var(--text-h);
+}
+
+.brief-generated {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.brief-generated.brief-stale {
+  color: #d18b1b;
+  font-weight: 600;
+}
+
 .brief-assumption {
   flex-basis: 100%;
   font-size: 12px;

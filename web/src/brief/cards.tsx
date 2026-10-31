@@ -9,7 +9,6 @@ const CHIP_NAMES: Record<ChipCode, string> = {
   '3xc': 'Triple Captain',
 }
 const RIVALS_COLLAPSED = 5
-const CAPTAIN_OPTIONS = 5
 
 /** One decimal, the way the engine rounds every number. */
 function pts(value: number): string {
@@ -179,19 +178,21 @@ export function XiCard({ scenario }: { scenario: Scenario }) {
 
 export function CaptainCard({ scenario }: { scenario: Scenario }) {
   const { captain, vice } = scenario
-  const options = [...scenario.xi].sort((a, b) => b.proj - a.proj).slice(0, CAPTAIN_OPTIONS)
+  const options = [...scenario.captain_options].sort((a, b) => b.basis - a.basis)
 
   return (
     <Card
       title="Captain"
       detail={
         <>
-          <h3 className="brief-sub">Top {CAPTAIN_OPTIONS} by projection</h3>
+          <h3 className="brief-sub">Captain score (expected output)</h3>
           <ol className="brief-list">
             {options.map((s) => (
               <li key={s.id} className="brief-player">
-                <span>{s.name}</span>
-                <span className="brief-num">{pts(s.proj)}</span>
+                <span>
+                  {s.name} <FlagMark slot={s} />
+                </span>
+                <span className="brief-num">{pts(s.basis)}</span>
               </li>
             ))}
           </ol>
@@ -200,13 +201,13 @@ export function CaptainCard({ scenario }: { scenario: Scenario }) {
     >
       <div className="brief-player brief-answer">
         <span>
-          <strong>(C)</strong> {captain.name}
+          <strong>(C)</strong> {captain.name} <FlagMark slot={captain} />
         </span>
         <span className="brief-num">{pts(captain.proj)}</span>
       </div>
       <div className="brief-player">
         <span>
-          <strong>(V)</strong> {vice.name}
+          <strong>(V)</strong> {vice.name} <FlagMark slot={vice} />
         </span>
         <span className="brief-num">{pts(vice.proj)}</span>
       </div>
