@@ -1,6 +1,6 @@
 # FPL Sniper — Phase 1 (Data Ingestion)
 
-A daily Python script that fetches Fantasy Premier League data and writes it to Supabase Postgres. Phase 1 of 5 — no frontend yet. You query the data via Supabase Studio.
+Python engines that fetch Fantasy Premier League data into Supabase Postgres (Phases 1–3A), plus a weekly brief engine and a one-screen PWA that recommends transfers, XI, captain and chips (Phase 3D). The sections below start with Phase 1 ingestion.
 
 ## Files
 
@@ -112,7 +112,7 @@ done
 launchctl list | grep fplsniper   # all agents should appear
 ```
 
-Both engines append to `~/Library/Logs/fplsniper/cron.log` (outside the repo — see below). To trigger a run manually: `launchctl kickstart gui/$(id -u)/com.fplsniper.daily`. To roll back to cron: `launchctl bootout` the three agents and re-add the crontab lines from git history.
+All engines append to `~/Library/Logs/fplsniper/cron.log` (outside the repo — see below). To trigger a run manually: `launchctl kickstart gui/$(id -u)/com.fplsniper.daily`. To roll back to cron: `launchctl bootout` the three agents and re-add the crontab lines from git history.
 
 **Limits, honestly:** launchd catches sleep, not shutdown, and a scheduling fix can't catch a broken runtime (the July 2026 venv wipe). Detection is the healthchecks.io dead-man switch (see env vars above) plus the schema assert both engines run at startup — an un-migrated database or dead venv now fails loudly with instructions instead of silently.
 

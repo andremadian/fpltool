@@ -4,9 +4,9 @@ Read this first when working in this project. Detailed setup is in [README.md](R
 
 ## What this project is
 
-**FPL Sniper** — a conversational-first Fantasy Premier League companion app, built in 5 phases. It now has two halves: the **data ingestion pipeline** (Python engines → Supabase, Phases 1–3A) and the **PWA frontend** (`web/`, a React 4-tab installable app, Phase 3B).
+**FPL Sniper** — a conversational-first Fantasy Premier League companion app, built in 5 phases. It now has two halves: the **data ingestion pipeline** (three Python engines → Supabase, Phases 1–3A + 3D) and the **PWA frontend** (`web/`, a React installable app, now a one-screen weekly brief, Phase 3D).
 
-The engines fetch FPL data on a schedule and write it to Supabase Postgres; the PWA reads it back through anon-key + RLS-locked curated views behind magic-link auth. (Supabase Studio is still available as a raw-SQL research surface.)
+The engines fetch FPL data on a schedule and write it to Supabase Postgres; the PWA reads the latest `weekly_brief` row back through anon-key + RLS behind magic-link auth. (Supabase Studio is still available as a raw-SQL research surface.)
 
 | Phase | Status | Scope |
 |-------|--------|-------|
@@ -87,12 +87,12 @@ Always run the engines via `.venv/bin/python` — the system Python has been wip
 
 - **`com.fplsniper.daily`:** every day 9am WIB — `fpl_engine.py --daily` (captures post-price-change state; FPL price changes land ~7:30am WIB)
 - **`com.fplsniper.fetch`:** Friday 5pm WIB — `fpl_engine.py` (weekly full run). Fires ~7.5h *before* the GW deadline, so it refreshes fixtures/FDR for the upcoming GW but cannot see the coming weekend's results — that's `postgw`'s job (see decision #15).
-- **`com.fplsniper.postgw`:** Tuesday 9am WIB — `fpl_engine.py` (full run, after the gameweek has actually finished). This is the run that lands `player_history` and finished `fixtures` for the GW just played, and therefore what the Stats Explorer reads.
+- **`com.fplsniper.postgw`:** Tuesday 9am WIB — `fpl_engine.py` (full run, after the gameweek has actually finished). This is the run that lands `player_history` and finished `fixtures` for the GW just played, and therefore what the (now retired) Stats Explorer read; the brief engine reads it too.
 - **`com.fplsniper.user`:** Friday 5:30pm + Saturday 10am WIB — `fpl_user_engine.py`
 - **`com.fplsniper.brief`:** every day 9:30am + Saturday 10:30am WIB — `fpl_brief_engine.py` (after the 9:00 daily/postgw runs have refreshed Supabase; Saturday slot lands after the canonical rival capture)
 - **`com.fplsniper.heartbeat`:** Thursday 8pm WIB — `health_check.py --notify` (report only, writes nothing)
 - **`com.fplsniper.web`:** always on — the Vite dev server on a pinned `http://localhost:5173` (`RunAtLoad` + `KeepAlive`, so it starts at login and restarts if it dies). This is the bookmarkable local PWA until it moves to Vercel. Logs to `~/Library/Logs/fplsniper/web.log`, not `cron.log`. `--strictPort` is deliberate: without it Vite silently falls back to 5174 and the bookmark breaks.
-- **Logs:** `~/Library/Logs/fplsniper/cron.log` — both engines log to the same file. **Must live outside the repo:** this project sits in a Google-Drive-synced `~/Documents`, and launchd's spawn fails with `EX_CONFIG (78)` when it tries to open a `StandardOut/ErrPath` redirect file there (Drive dehydrates/TCC-protects it) — which silently killed *every* scheduled run, not just logging (fixed July 2026, see decision #12). Keep all launchd `StandardOut/ErrPath` values pointed at `~/Library/Logs/`, never `~/Documents`.
+- **Logs:** `~/Library/Logs/fplsniper/cron.log` — all three engines log to the same file. **Must live outside the repo:** this project sits in a Google-Drive-synced `~/Documents`, and launchd's spawn fails with `EX_CONFIG (78)` when it tries to open a `StandardOut/ErrPath` redirect file there (Drive dehydrates/TCC-protects it) — which silently killed *every* scheduled run, not just logging (fixed July 2026, see decision #12). Keep all launchd `StandardOut/ErrPath` values pointed at `~/Library/Logs/`, never `~/Documents`.
 - **View:** `launchctl list | grep fplsniper` for agents, `tail ~/Library/Logs/fplsniper/cron.log` for runs, or query `pipeline_runs` in Supabase (one row per run, any outcome)
 - **Weekly heartbeat:** `health_check.py` — read-only report over `pipeline_runs` + the time-series tables (season state, next deadline, runs-vs-expected per engine over 7 days, data staleness, current-vs-stale `players_master` split, `tracked_leagues` sanity). Exits 1 if any warning fires or the send fails. Run it any time with `.venv/bin/python health_check.py`; `--notify` also pushes it to Telegram (`TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` in `.env`). Scheduled Thursday 8pm WIB deliberately — the evening before a typical Friday-morning deadline, so there's still time to fix a broken pipeline before it costs points. This covers "is the data sane"; healthchecks.io below covers "did the run happen at all".
 - **Alerting:** healthchecks.io dead-man switch — engines ping `HEALTHCHECK_URL_*` from `.env` on every run; a missing ping triggers an email. This (not launchd) is what catches a shut-down Mac or a wiped venv.
@@ -229,7 +229,7 @@ A React 19 + Vite + TypeScript installable PWA, $0/month, reads Supabase directl
 - **`rival_team_snapshots`** — Phase 2. Rivals' squads per GW. PK `(season, rival_fpl_team_id, gw)`. Same shape as `user_team_snapshots` minus personal-finance fields.
 - **user/conversation tables** — empty in Phases 1–2; Phase 3+. Note: Phase 2 deliberately uses its own tables instead of these because the existing scaffold FKs to `auth.users` and Phase 2 has no login.
 - **`weekly_brief`** — Phase 3D. One row per brief run: `season`, `gw`, `generated_at`, `mode` (defend/chase), `payload` jsonb (15 scenarios, chips, rival comparison, inputs used). Written by `fpl_brief_engine.py` with the service key; the PWA reads the latest row (RLS owner-read, no browser writes).
-- **`player_explorer_season` / `player_explorer_last5`** — Phase 3C views. One row per player with the full metric set (goals/assists/xG/xA/xGI/xGC/CS/CBIT/BPS/ICT/points_per_90/points_per_million/…), season totals or last-5-GW form. Read by the Stats tab.
+- **`player_explorer_season` / `player_explorer_last5`** — Phase 3C views. One row per player with the full metric set (goals/assists/xG/xA/xGI/xGC/CS/CBIT/BPS/ICT/points_per_90/points_per_million/…), season totals or last-5-GW form. Read by the retired Stats tab (UI removed in Phase 3D, see #16; views remain unused).
 - **`team_explorer_season` / `team_explorer_last5`** — Phase 3C views. One row per club: W/D/L, GF/GA/GD, points, clean sheets (from finished `fixtures`), xG/xA/xGC (from `team_history`), strength ratings.
 
 ## Migrations
@@ -242,10 +242,10 @@ A React 19 + Vite + TypeScript installable PWA, $0/month, reads Supabase directl
 - **0006** — Phase 3A. Adds availability + transfer-momentum columns to `players_master`. Idempotent (`add column if not exists`).
 - **0007** — Phase 3A. Creates `player_daily` + `pipeline_runs`. Both engines' startup schema assert requires 0006 + 0007 — they exit loudly naming the missing migration until it's applied.
 - **0008** — Phase 3B (PWA foundation). RLS security lockdown, `gameweeks` table, `is_me` matching, and the curated read-only views the PWA queries. This is what makes anon-key reads from the browser safe.
-- **0009** — Phase 3B. Projection views keyed on `player_id`. The PWA reads these; the engines don't.
-- **0010** — Phase 3C. Four `security_invoker` views (`player_explorer_season/last5`, `team_explorer_season/last5`) powering the Stats tab. Read-only; no engine changes. Apply via SQL Editor. **Superseded by 0011** at the season boundary — apply 0011 too.
+- **0009** — Phase 3B. Projection views keyed on `player_id`. Retired from the UI in Phase 3D (see #16); views remain in the DB unused.
+- **0010** — Phase 3C. Four `security_invoker` views (`player_explorer_season/last5`, `team_explorer_season/last5`) powering the (now retired) Stats tab. Read-only; no engine changes. Apply via SQL Editor. **Superseded by 0011** at the season boundary — apply 0011 too.
 - **0011** — Phase 3C. Rewrites the four explorer views to anchor on the latest *finished-fixture* season and resolve identity from the season archives (see decision #13). Fixes the all-zero team tab, mis-attributed names, and pre-season `form = 0` seen at the 2025/26→2026/27 rollover. Idempotent (`drop view if exists` + recreate). Apply via SQL Editor.
-- **0012** — Phase 3C. Applies the same archive-resolver fix to the `player_season_stats` view (read by the Chart maker and the player row-expand). Same idempotent drop+recreate. Apply via SQL Editor.
+- **0012** — Phase 3C. Applies the same archive-resolver fix to the `player_season_stats` view (read by the since-retired Chart maker and player row-expand). Same idempotent drop+recreate. Apply via SQL Editor.
 - **0013** — Adds `players_master.last_seen_season`, backfills it (from the latest `player_daily` batch, then the identity archive), and adds a season guard to the two `*_projection` views' club-enumeration join. **`fpl_engine.py`'s schema assert requires this** — the engine fails loudly until it's applied. Idempotent (`add column if not exists` + `create or replace view`). Apply via SQL Editor. See decision #14.
 - **0014** — Phase 3D. Creates `weekly_brief` with RLS + the owner-read policy and revokes browser writes. **`fpl_brief_engine.py`'s schema assert requires this.** Idempotent. Apply via SQL Editor. See decision #16.
 
@@ -262,7 +262,7 @@ A React 19 + Vite + TypeScript installable PWA, $0/month, reads Supabase directl
 
 - For Phase 1 changes: stay focused on the global ingestion pipeline (`fpl_engine.py` and the data tables it writes). Don't pre-emptively touch the user/conversation tables — those are Phase 3+ scope.
 - For Phase 2 changes: stay in `fpl_user_engine.py` and the four Phase 2 tables. Do not modify `fpl_engine.py` or Phase 1 tables — the two engines are intentionally separate.
-- For PWA (Phase 3B) changes: stay in `web/`. The frontend reads Supabase via the **anon key** through the RLS-locked curated views from migrations 0008/0009 — never wire it to the service-role key, and if it needs a new shape of data, add/adjust a curated view in a new migration rather than loosening RLS or having the browser hit base tables. Don't change the engines to satisfy a UI need without going through the views.
+- For PWA changes: stay in `web/`. The frontend reads Supabase via the **anon key** only — never the service-role key — and only the `weekly_brief` row. A new data shape means changing `brief/payload.py` and `web/src/brief/types.ts` together; never loosen RLS or have the browser hit base tables. The retired 0008–0013 views are not a surface to build on.
 - For weekly-brief changes: stay in `fpl_brief_engine.py`, `brief/` and `web/src/brief/`; keep `tests/` green (`.venv/bin/python -m pytest`). The engine writes only `weekly_brief` — don't have it write the user-engine tables.
 - For new phases: ask the user for the next brief before starting. Each phase has its own brief.
 - For schema changes: never modify a migration file after it's been applied. Create a new migration file (next sequential number) and add it.
