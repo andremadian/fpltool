@@ -3,7 +3,7 @@ import { supabase } from '../lib/supabaseClient'
 import { useSupabaseQuery } from '../hooks/useSupabaseQuery'
 import type { PipelineRun } from '../types/db'
 
-const ENGINES = ['fpl_engine', 'fpl_engine --daily', 'fpl_user_engine'] as const
+const ENGINES = ['fpl_engine', 'fpl_engine --daily', 'fpl_user_engine', 'fpl_brief_engine'] as const
 const DAILY_ENGINE = 'fpl_engine --daily'
 const FRESH_WINDOW_MS = 36 * 60 * 60 * 1000
 // A daily run that either ingested (`success`) or correctly idled for the
