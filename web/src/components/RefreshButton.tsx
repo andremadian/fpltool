@@ -30,17 +30,24 @@ export function RefreshButton({ onRefreshed }: { onRefreshed: () => void }) {
   }
 
   return (
-    <button
-      type="button"
-      className="refresh-button"
-      onClick={refresh}
-      disabled={running}
-      title="Fetch the latest FPL data and rebuild the brief"
-    >
-      <span className={`refresh-icon${running ? ' refresh-spinning' : ''}`} aria-hidden="true">
-        ↻
-      </span>
-      {running ? 'Refreshing…' : 'Refresh'}
-    </button>
+    <>
+      <button
+        type="button"
+        className="refresh-button"
+        onClick={refresh}
+        disabled={running}
+        title="Fetch the latest FPL data and rebuild the brief"
+      >
+        <span className={`refresh-icon${running ? ' refresh-spinning' : ''}`} aria-hidden="true">
+          ↻
+        </span>
+        {running ? 'Refreshing…' : 'Refresh'}
+      </button>
+      <p className="refresh-hint">
+        {running
+          ? 'Fetching the latest FPL data and rebuilding the brief — about 35 seconds.'
+          : 'Refresh pulls the latest prices, injury news and rival teams from FPL, then rebuilds this brief (about 35s). Last gameweek’s match stats arrive with the Tuesday run.'}
+      </p>
+    </>
   )
 }

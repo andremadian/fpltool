@@ -626,3 +626,13 @@ button.brief-card-head {
     transform: rotate(360deg);
   }
 }
+
+/* Full-width second line of the header, after Sign out. */
+.refresh-hint {
+  order: 1;
+  flex-basis: 100%;
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text);
+}
