@@ -5,7 +5,7 @@ export interface PipelineRun {
   gw: number | null
   rows_written: number
   duration_seconds: number | null
-  status: 'success' | 'failed' | 'skipped_offseason' | 'skipped_no_config'
+  status: 'success' | 'failed' | 'skipped_offseason' | 'skipped_preseason' | 'skipped_no_config'
   detail: string | null
   ran_at: string
 }

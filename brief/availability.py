@@ -9,22 +9,34 @@ _MONTHS = {m: i + 1 for i, m in enumerate(
 )}
 _DATE_RE = re.compile(r"(\d{1,2})\s+(jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*", re.I)
 _BAN_RE = re.compile(r"(\d+)[\s-]*(?:match|game)", re.I)
+# A news date that passed at most this many days ago is stale, not next year's.
+STALE_NEWS_DAYS = 120
 
 
 def parse_return_date(news: str, today: date) -> date | None:
-    """Parse a return date like '22 Nov' from news; next occurrence on/after today."""
+    """Parse a return date like '22 Nov' from news; None if it passed within STALE_NEWS_DAYS.
+
+    A date this year still ahead is used as is. One that passed recently is stale
+    news (the player missed his return), so the no-date rules apply. Only a date
+    long gone (the Dec→Jan case) rolls forward to next year.
+    """
     found = _DATE_RE.search(news)
     if not found:
         return None
     day, month = int(found.group(1)), _MONTHS[found.group(2).lower()]
-    for year in (today.year, today.year + 1):
-        try:
-            candidate = date(year, month, day)
-        except ValueError:
-            continue
-        if candidate >= today:
-            return candidate
-    return None
+    try:
+        this_year = date(today.year, month, day)
+    except ValueError:
+        this_year = None
+    if this_year is not None:
+        if this_year >= today:
+            return this_year
+        if (today - this_year).days <= STALE_NEWS_DAYS:
+            return None
+    try:
+        return date(today.year + 1, month, day)
+    except ValueError:
+        return None
 
 
 def _ban_length(news: str) -> int:

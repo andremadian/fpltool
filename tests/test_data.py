@@ -2,6 +2,9 @@
 from datetime import date
 from decimal import Decimal
 
+import pytest
+import requests
+
 from brief import fpl_api
 from brief.data import load_fixtures, load_flags, load_history
 
@@ -100,8 +103,76 @@ def test_standings_paginates(monkeypatch) -> None:
 
     def fake_get(url, timeout):
         page = int(url.rsplit("=", 1)[1])
-        return type("R", (), {"raise_for_status": lambda s: None, "json": lambda s: pages[page]})()
+        return type("R", (), {"status_code": 200, "raise_for_status": lambda s: None,
+                              "json": lambda s: pages[page]})()
 
     monkeypatch.setattr(fpl_api.requests, "get", fake_get)
     rows = fpl_api.fetch_league_standings(99)
     assert [r["entry"] for r in rows] == [1, 2] and "x" not in rows[0]
+
+
+class _Resp:
+    """A minimal requests.Response stand-in."""
+
+    def __init__(self, status: int, body: dict | None = None) -> None:
+        self.status_code = status
+        self.body = body or {}
+
+    def raise_for_status(self) -> None:
+        if self.status_code >= 400:
+            raise requests.HTTPError(f"{self.status_code}")
+
+    def json(self) -> dict:
+        return self.body
+
+
+def _scripted(monkeypatch, outcomes: list) -> tuple[list[str], list[float]]:
+    """Make requests.get play `outcomes` in order (exceptions are raised); record calls and sleeps."""
+    calls: list[str] = []
+    sleeps: list[float] = []
+
+    def fake_get(url, timeout):
+        calls.append(url)
+        outcome = outcomes[len(calls) - 1]
+        if isinstance(outcome, Exception):
+            raise outcome
+        return outcome
+
+    monkeypatch.setattr(fpl_api.requests, "get", fake_get)
+    monkeypatch.setattr(fpl_api, "_retry_sleep", sleeps.append)
+    monkeypatch.setattr(fpl_api, "_sleep", lambda: None)
+    return calls, sleeps
+
+
+def test_get_retries_connection_error_timeout_and_5xx(monkeypatch) -> None:
+    """Connection errors, timeouts and 5xx are retried with 2s then 5s backoff."""
+    calls, sleeps = _scripted(monkeypatch, [requests.ConnectionError("down"), _Resp(503),
+                                            _Resp(200, {"events": []})])
+    assert fpl_api.fetch_bootstrap() == {"events": []}
+    assert len(calls) == 3 and sleeps == [2, 5]
+    calls, sleeps = _scripted(monkeypatch, [requests.Timeout("slow"), _Resp(200, {"ok": 1})])
+    assert fpl_api.fetch_bootstrap() == {"ok": 1} and sleeps == [2]
+
+
+def test_get_gives_up_after_three_attempts(monkeypatch) -> None:
+    """The third failure propagates: a 5xx raises HTTPError, a dropped connection re-raises."""
+    calls, sleeps = _scripted(monkeypatch, [_Resp(500), _Resp(502), _Resp(503)])
+    with pytest.raises(requests.HTTPError):
+        fpl_api.fetch_bootstrap()
+    assert len(calls) == 3 and sleeps == [2, 5]
+    calls, _ = _scripted(monkeypatch, [requests.ConnectionError("x")] * 3)
+    with pytest.raises(requests.ConnectionError):
+        fpl_api.fetch_bootstrap()
+    assert len(calls) == 3
+
+
+def test_picks_404_and_4xx_not_retried(monkeypatch) -> None:
+    """A 404 on picks returns None at once; other 4xx raise at once; picks retry 5xx."""
+    calls, sleeps = _scripted(monkeypatch, [_Resp(404)])
+    assert fpl_api.fetch_entry_picks(1, 5) is None and len(calls) == 1 and sleeps == []
+    calls, sleeps = _scripted(monkeypatch, [_Resp(403)])
+    with pytest.raises(requests.HTTPError):
+        fpl_api.fetch_bootstrap()
+    assert len(calls) == 1 and sleeps == []
+    calls, sleeps = _scripted(monkeypatch, [_Resp(502), _Resp(200, {"picks": []})])
+    assert fpl_api.fetch_entry_picks(1, 5) == {"picks": []} and sleeps == [2]

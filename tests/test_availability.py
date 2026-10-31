@@ -68,6 +68,19 @@ def test_parse_return_date_formats_and_rollover() -> None:
     assert parse_return_date("Hamstring injury", TODAY) is None
 
 
+def test_parse_return_date_recent_past_is_stale() -> None:
+    """A date up to 120 days ago is stale news, not next year's return: no date at all."""
+    assert parse_return_date("Expected back 20 Oct", TODAY) is None
+    assert parse_return_date("Expected back 3 Jul", TODAY) is None  # exactly 120 days ago
+    assert parse_return_date("Expected back 2 Jul", TODAY) == date(2027, 7, 2)  # 121 days: Dec→Jan-style roll
+
+
+def test_stale_return_date_uses_no_date_rules() -> None:
+    """A 0% player whose news date has passed falls back to the no-date rules."""
+    p = _p("i", 0, "Knee injury - Expected back 20 Oct")
+    assert availability(p, WINDOW, _gws(), TODAY) == [0, 0.5, 1, 1, 1]
+
+
 def test_cannot_buy_50() -> None:
     assert not can_buy(_p("d", 50))
     assert not can_buy(_p("i"))
