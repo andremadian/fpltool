@@ -45,11 +45,13 @@ logger = logging.getLogger(__name__)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 # How many runs each launchd agent should produce in a healthy 7-day window.
-# Mirrors launchd/: daily fires 7x, fetch 1x (Fri), user 2x (Fri + Sat).
+# Mirrors launchd/: daily fires 7x, fetch 1x (Fri), user 2x (Fri + Sat),
+# brief 8x (daily 09:30 + Sat 10:30).
 EXPECTED_RUNS_PER_WEEK = {
     "fpl_engine --daily": 7,
     "fpl_engine": 1,
     "fpl_user_engine": 2,
+    "fpl_brief_engine": 8,
 }
 
 # player_daily should gain a row set every day; more than this many days
