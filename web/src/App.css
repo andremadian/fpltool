@@ -592,3 +592,37 @@ button.brief-card-head {
   text-transform: uppercase;
   letter-spacing: 0.06em;
 }
+
+/* ---------- Manual refresh ---------- */
+.refresh-button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: none;
+  color: var(--text-h);
+  cursor: pointer;
+}
+
+.refresh-button:disabled {
+  opacity: 0.7;
+  cursor: default;
+}
+
+.refresh-icon {
+  display: inline-block;
+  line-height: 1;
+}
+
+.refresh-spinning {
+  animation: refresh-spin 1s linear infinite;
+}
+
+@keyframes refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

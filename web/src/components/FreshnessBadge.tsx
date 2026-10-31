@@ -21,12 +21,12 @@ function latestPerEngine(rows: PipelineRun[]): Map<string, PipelineRun> {
   return map
 }
 
-export function FreshnessBadge() {
+export function FreshnessBadge({ version = 0 }: { version?: number }) {
   const [expanded, setExpanded] = useState(false)
   const state = useSupabaseQuery<PipelineRun>(
     () =>
       supabase.from('pipeline_runs').select('*').order('ran_at', { ascending: false }).limit(20),
-    [],
+    [version],
   )
 
   if (state.status === 'loading') {

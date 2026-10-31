@@ -13,8 +13,8 @@ export interface BriefState {
   generatedAt?: string
 }
 
-/** The most recent weekly brief the engine wrote. */
-export function useBrief(): BriefState {
+/** The most recent weekly brief the engine wrote; re-read whenever `version` changes. */
+export function useBrief(version = 0): BriefState {
   const state = useSupabaseQuery<WeeklyBriefRow>(
     () =>
       supabase
@@ -22,7 +22,7 @@ export function useBrief(): BriefState {
         .select('payload, generated_at')
         .order('generated_at', { ascending: false })
         .limit(1),
-    [],
+    [version],
   )
 
   if (state.status === 'data') {

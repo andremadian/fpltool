@@ -59,8 +59,8 @@ function modeLabel(mode: Mode): string {
   return mode.target ? `${head} · ${mode.gap} behind ${mode.target.player_name}` : head
 }
 
-export function Brief() {
-  const state = useBrief()
+export function Brief({ version = 0 }: { version?: number }) {
+  const state = useBrief(version)
   const [prefs, setPrefs] = useState<BriefPrefs>(loadPrefs)
   const [now] = useState(() => Date.now())
 
